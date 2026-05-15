@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.0 (2026-05-15)
+
+- Expose Cat-5 (ML-KEM-1024) in WASM bindings for browser opt-in
+  - New WASM export: `generateHybridKeyPair1024` — Cat-5 keypair generation
+  - New WASM export: `sealForUserWithLevel` — seal with explicit `"cat3"` / `"cat5"` level
+  - `isHybridCiphertext` now documents v2 (Cat-3) and v3 (Cat-5) detection
+- New Rust API: `seal_for_user_with_level` — level-parametric unified seal
+- `unsealFromUser` / `unseal_from_user` unchanged — already auto-detects Cat-3/Cat-5
+- All existing APIs unchanged — fully backward compatible
+
 ## v0.2.0 (2026-05-13)
 
 - Add ML-KEM-1024 + X25519 hybrid (NIST Category 5) as opt-in security level
