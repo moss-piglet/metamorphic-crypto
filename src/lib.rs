@@ -58,7 +58,7 @@ pub use recovery::{
     RecoveryKey, decrypt_private_key_with_recovery, encrypt_private_key_for_recovery,
     generate_recovery_key, recovery_key_to_secret,
 };
-pub use seal::{seal_for_user, unseal_from_user};
+pub use seal::{seal_for_user, seal_for_user_with_level, unseal_from_user};
 pub use secretbox::{
     decrypt_secretbox, decrypt_secretbox_to_string, encrypt_secretbox, encrypt_secretbox_string,
 };
