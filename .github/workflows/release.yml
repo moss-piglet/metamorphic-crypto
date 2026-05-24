@@ -39,6 +39,12 @@ jobs:
       - name: Tests
         run: cargo test
 
+      # --- Publish to crates.io ---
+      - name: Publish to crates.io
+        run: cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       # --- WASM build ---
       - name: Install wasm-pack
         run: |
