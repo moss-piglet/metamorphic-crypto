@@ -1,0 +1,73 @@
+name: Release WASM
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pin versions for reproducibility
+  RUST_TOOLCHAIN: "1.85"
+  WASM_PACK_VERSION: "0.14.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # --- Quality gates ---
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      # --- WASM build ---
+      - name: Install wasm-pack
+        run: cargo install wasm-pack@${{ env.WASM_PACK_VERSION }} --locked
+
+      - name: Build WASM (--target web)
+        run: wasm-pack build --target web --release
+
+      # --- Checksums ---
+      - name: Compute SHA-512 checksums
+        working-directory: pkg
+        run: sha512sum metamorphic_crypto.js metamorphic_crypto_bg.wasm > SHA512SUMS
+
+      - name: Display checksums
+        run: cat pkg/SHA512SUMS
+
+      # --- Attestation ---
+      - name: Attest WASM artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            pkg/metamorphic_crypto.js
+            pkg/metamorphic_crypto_bg.wasm
+
+      # --- Release ---
+      - name: Attach artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pkg/metamorphic_crypto.js
+            pkg/metamorphic_crypto_bg.wasm
+            pkg/SHA512SUMS
+          fail_on_unmatched_files: true
