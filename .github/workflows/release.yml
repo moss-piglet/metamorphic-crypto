@@ -88,7 +88,9 @@ jobs:
 
       - name: Scope package for npm
         working-directory: pkg
-        run: npm pkg set name="@f0rest8/metamorphic-crypto"
+        run: |
+          npm pkg set name="@f0rest8/metamorphic-crypto"
+          cp ../npm-README.md README.md
 
       - name: Publish to npm
         working-directory: pkg
