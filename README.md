@@ -2,7 +2,7 @@
 
 Zero-knowledge end-to-end encryption library with post-quantum hybrid KEM.
 
-Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.app) — privacy-first apps by [Moss Piglet Corporation](https://mosspiglet.dev) where all user data is encrypted client-side and the server only stores opaque ciphertext.
+Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.com) — privacy-first apps by [Moss Piglet Corporation](https://mosspiglet.dev) where all user data is encrypted client-side and the server only stores opaque ciphertext.
 
 ## What this provides
 
