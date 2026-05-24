@@ -57,6 +57,15 @@ jobs:
       - name: Display checksums
         run: cat pkg/SHA512SUMS
 
+      # --- Cosign (keyless signing via GitHub OIDC) ---
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifacts with cosign
+        run: |
+          cosign sign-blob --yes --bundle pkg/metamorphic_crypto.js.cosign.bundle pkg/metamorphic_crypto.js
+          cosign sign-blob --yes --bundle pkg/metamorphic_crypto_bg.wasm.cosign.bundle pkg/metamorphic_crypto_bg.wasm
+
       # --- Attestation ---
       - name: Attest WASM artifacts
         uses: actions/attest-build-provenance@v2
@@ -65,7 +74,23 @@ jobs:
             pkg/metamorphic_crypto.js
             pkg/metamorphic_crypto_bg.wasm
 
-      # --- Release ---
+      # --- npm publish ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Scope package for npm
+        working-directory: pkg
+        run: npm pkg set name="@f0rest8/metamorphic-crypto"
+
+      - name: Publish to npm
+        working-directory: pkg
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # --- GitHub Release ---
       - name: Attach artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -73,4 +98,6 @@ jobs:
             pkg/metamorphic_crypto.js
             pkg/metamorphic_crypto_bg.wasm
             pkg/SHA512SUMS
+            pkg/metamorphic_crypto.js.cosign.bundle
+            pkg/metamorphic_crypto_bg.wasm.cosign.bundle
           fail_on_unmatched_files: true

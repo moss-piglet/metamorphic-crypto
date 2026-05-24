@@ -77,6 +77,10 @@ sed -i.bak \
   "${TMPDIR}/metamorphic_crypto.js"
 rm -f "${TMPDIR}/metamorphic_crypto.js.bak"
 
+# Recompute checksums after patching (the JS hash changed)
+echo "==> Recomputing checksums for patched artifacts..."
+(cd "$TMPDIR" && $SHA_CMD metamorphic_crypto.js metamorphic_crypto_bg.wasm > SHA512SUMS)
+
 # --- Copy to project ---
 
 echo "==> Copying to vendor directory..."
@@ -86,6 +90,7 @@ mkdir -p "$DEST"
 cp "${TMPDIR}/metamorphic_crypto.js" "$DEST/"
 cp "${TMPDIR}/metamorphic_crypto_bg.wasm" "$DEST/"
 cp "${TMPDIR}/SHA512SUMS" "$DEST/"
+echo "$TAG" > "${DEST}/VERSION"
 
 # Keep license files if they exist
 for license in LICENSE-APACHE LICENSE-MIT; do
