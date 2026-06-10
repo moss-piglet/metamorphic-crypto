@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keep SHA-pinned GitHub Actions current. Dependabot opens PRs that bump
+  # both the pinned commit SHA and the trailing version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Cargo dependency updates for the crate itself.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
