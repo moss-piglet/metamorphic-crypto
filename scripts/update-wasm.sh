@@ -44,7 +44,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-for file in metamorphic_crypto.js metamorphic_crypto_bg.wasm SHA512SUMS; do
+for file in metamorphic_crypto.js metamorphic_crypto_bg.wasm sbom.json SHA512SUMS; do
   echo "    Downloading ${file}..."
   curl -fsSL "${BASE_URL}/${file}" -o "${TMPDIR}/${file}"
 done
