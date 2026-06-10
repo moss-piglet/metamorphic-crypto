@@ -151,6 +151,28 @@ Decryption always auto-detects the level from the ciphertext version tag.
 - OS CSPRNG via `getrandom` (no userspace PRNG)
 - Hybrid construction: both ML-KEM AND X25519 must be broken to compromise a sealed key
 
+## Network access
+
+Security scanners (e.g. Socket) may flag this package for "network access."
+This is the standard `wasm-bindgen` loader, which calls `fetch()` for a **single**
+purpose: to load the package's own `.wasm` binary when you call the default
+`init()` export. There are no other network calls — no telemetry, no remote
+code, no install scripts.
+
+The fetched URL is whatever **you** pass to `init()`. With no argument it
+defaults to the `.wasm` file shipped alongside the JS (`new URL('metamorphic_crypto_bg.wasm', import.meta.url)`),
+i.e. a same-origin asset you control.
+
+If you want zero network capability, use the synchronous initializer with bytes
+you load yourself — it never calls `fetch`:
+
+```js
+import { initSync } from "@f0rest8/metamorphic-crypto";
+
+// e.g. bytes from your bundler, a same-origin path, or an embedded buffer
+initSync({ module: wasmBytes });
+```
+
 ## Integrity verification
 
 Every release includes SHA-512 checksums and [cosign](https://docs.sigstore.dev/cosign/overview/) signatures for supply chain verification:
