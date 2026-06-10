@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.6 (2026-06-10)
+
+- No functional changes to the crate.
+- Documentation: explain the `wasm-bindgen` "network access" pattern that
+  security scanners (e.g. Socket) surface — the loader's single `fetch()` only
+  loads the package's own `.wasm`; documents `initSync` for no-network init.
+- Group Dependabot updates to reduce PR noise.
+
 ## v0.3.5 (2026-06-10)
 
 - No functional changes to the crate.
