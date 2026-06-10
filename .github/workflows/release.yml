@@ -23,6 +23,11 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Scopes the crates.io and npm OIDC trusted-publishing credentials to a
+    # dedicated, protectable environment (configure under repo Settings →
+    # Environments). The trusted-publisher config on crates.io/npmjs must use
+    # this same environment name.
+    environment: release
     steps:
       # Third-party actions are pinned to a full commit SHA (SLSA L3 / federal
       # supply-chain requirement). Version comments are kept for Dependabot,
