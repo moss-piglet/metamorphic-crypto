@@ -16,8 +16,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin versions for reproducibility
-  RUST_TOOLCHAIN: "1.85"
+  # Toolchain used to BUILD and PUBLISH the release. This is intentionally newer
+  # than the crate's declared MSRV (`rust-version = "1.85"` in Cargo.toml) so the
+  # release tooling (cargo-audit, cargo-cyclonedx) installs cleanly — those tools
+  # raise their own MSRV over time. MSRV compatibility is still verified in CI.
+  RUST_TOOLCHAIN: "1.90"
   WASM_PACK_VERSION: "0.14.0"
 
 jobs:
