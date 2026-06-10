@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.5 (2026-06-10)
+
+- No functional changes to the crate.
+- Supply-chain hardening of the release pipeline:
+  - OIDC trusted publishing to crates.io and npm (no stored registry tokens),
+    scoped to a protected `release` GitHub Actions environment
+  - npm publish now attaches build provenance
+  - CycloneDX SBOM generated, checksummed, and attested with each release
+  - Release-time `cargo audit` gate
+  - All GitHub Actions pinned to commit SHAs; Dependabot added
+  - `wasm-pack` installed from locked source instead of an unverified tarball
+
 ## v0.3.0 (2026-05-15)
 
 - Expose Cat-5 (ML-KEM-1024) in WASM bindings for browser opt-in
