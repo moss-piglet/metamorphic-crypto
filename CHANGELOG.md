@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.7 (2026-06-10)
+
+- No functional changes to the crate; output is byte-identical to v0.3.6.
+- Dependencies: `sha3` 0.10 → 0.11. This unifies on a single `sha3`/`keccak`
+  version with `ml-kem` (previously the tree carried both 0.10 and 0.11),
+  shrinking the dependency graph and producing a cleaner SBOM and slightly
+  smaller WASM. `js-sys` 0.3.99 → 0.3.100.
+- CI: release-pipeline actions updated to current major versions
+  (cosign-installer v4, attest-build-provenance v4, action-gh-release v3,
+  setup-node v6, checkout v6).
+
 ## v0.3.6 (2026-06-10)
 
 - No functional changes to the crate.
