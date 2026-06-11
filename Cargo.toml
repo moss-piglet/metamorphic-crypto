@@ -24,7 +24,7 @@ crypto_box = "0.9"
 blake2 = "0.10"
 ml-kem = "0.3"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-sha3 = "0.11"
+sha3 = "0.12"
 base64 = "0.22"
 getrandom = "0.2"
 zeroize = { version = "1", features = ["derive"] }
