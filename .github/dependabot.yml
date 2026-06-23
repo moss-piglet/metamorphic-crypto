@@ -18,6 +18,18 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # `sha3` and `sha2` are intentionally held at the 0.11 line: the
+      # transitive `ml-kem 0.3.x` dependency requires `sha3 ^0.11`, and `sha2`
+      # must share the same `digest 0.11` to keep a single `digest`/`keccak`
+      # version in the tree (see CHANGELOG v0.3.7 / v0.4.0). A bump to 0.12 on
+      # either crate cannot unify with `ml-kem` and will fail to compile, so
+      # those PRs are noise until `ml-kem` itself moves to `sha3 0.12`.
+      # Re-evaluate (and drop this ignore) when `ml-kem` bumps `sha3`.
+      - dependency-name: "sha3"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-minor"]
     groups:
       # Batch low-risk patch/minor bumps. Major bumps (and 0.x minor bumps,
       # which are breaking) stay as separate PRs so cryptography dependencies

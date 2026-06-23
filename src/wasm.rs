@@ -9,8 +9,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::hybrid::SecurityLevel;
-use crate::{b64, box_seal, hybrid, kdf, keys, recovery, seal, secretbox};
-
+use crate::{b64, box_seal, hash, hybrid, kdf, keys, recovery, seal, secretbox};
 // ---------------------------------------------------------------------------
 // Key derivation
 // ---------------------------------------------------------------------------
@@ -252,6 +251,60 @@ pub fn parse_salt_from_key_hash(key_hash: &str) -> Result<String, JsValue> {
     b64::parse_salt_from_key_hash(key_hash)
         .map(|s| s.to_string())
         .map_err(to_js)
+}
+
+// ---------------------------------------------------------------------------
+// Hashing (SHA-3 / SHA-2)
+// ---------------------------------------------------------------------------
+//
+// Encoding: like the rest of this WASM API, inputs and outputs are base64
+// strings (standard alphabet, with padding — matching JS `btoa`/`atob`). The
+// caller passes the data to hash as base64 and receives the digest as base64.
+// Base64 (not hex) is used purely for consistency with the sibling exports;
+// decode with `atob` or re-encode to hex on the JS side if a hex fingerprint
+// is required.
+
+/// SHA3-512 digest of base64-encoded `data`. Returns the 64-byte digest as base64.
+///
+/// This is the recommended default hash (NIST Cat-5).
+#[wasm_bindgen(js_name = "sha3_512")]
+pub fn sha3_512(data_b64: &str) -> Result<String, JsValue> {
+    let data = b64::decode(data_b64).map_err(to_js)?;
+    Ok(b64::encode(&hash::sha3_512(&data)))
+}
+
+/// Domain-separated SHA3-512: binds the digest to a UTF-8 `context` label.
+///
+/// `data` is base64; returns the 64-byte digest as base64. Prefer this over
+/// `sha3_512` for fingerprints / safety numbers / key-transparency entries.
+///
+/// Wire format (reproduce exactly for parity with native/Elixir):
+/// `SHA3-512( u64_be(len(context_utf8)) || context_utf8 || data )`.
+#[wasm_bindgen(js_name = "sha3_512WithContext")]
+pub fn sha3_512_with_context(context: &str, data_b64: &str) -> Result<String, JsValue> {
+    let data = b64::decode(data_b64).map_err(to_js)?;
+    Ok(b64::encode(&hash::sha3_512_with_context(context, &data)))
+}
+
+/// SHA3-256 digest of base64-encoded `data`. Returns the 32-byte digest as base64.
+#[wasm_bindgen(js_name = "sha3_256")]
+pub fn sha3_256(data_b64: &str) -> Result<String, JsValue> {
+    let data = b64::decode(data_b64).map_err(to_js)?;
+    Ok(b64::encode(&hash::sha3_256(&data)))
+}
+
+/// SHA-256 (SHA-2) digest of base64-encoded `data`. Returns the 32-byte digest as base64.
+#[wasm_bindgen(js_name = "sha256")]
+pub fn sha256(data_b64: &str) -> Result<String, JsValue> {
+    let data = b64::decode(data_b64).map_err(to_js)?;
+    Ok(b64::encode(&hash::sha256(&data)))
+}
+
+/// SHA-512 (SHA-2) digest of base64-encoded `data`. Returns the 64-byte digest as base64.
+#[wasm_bindgen(js_name = "sha512")]
+pub fn sha512(data_b64: &str) -> Result<String, JsValue> {
+    let data = b64::decode(data_b64).map_err(to_js)?;
+    Ok(b64::encode(&hash::sha512(&data)))
 }
 
 // ---------------------------------------------------------------------------

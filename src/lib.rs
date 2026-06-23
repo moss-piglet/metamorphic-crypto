@@ -29,6 +29,7 @@
 pub mod b64;
 pub mod box_seal;
 pub mod error;
+pub mod hash;
 pub mod hybrid;
 pub mod kdf;
 pub mod keys;
@@ -44,6 +45,7 @@ pub use error::CryptoError;
 // Re-export the primary public API
 pub use b64::parse_salt_from_key_hash;
 pub use box_seal::{box_seal, box_seal_open};
+pub use hash::{sha3_256, sha3_512, sha3_512_with_context, sha256, sha512};
 pub use hybrid::{
     HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_1024,
     generate_hybrid_keypair_with_level, hybrid_open, hybrid_seal, hybrid_seal_1024,

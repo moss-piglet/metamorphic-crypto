@@ -134,6 +134,48 @@ const secret = recoveryKeyToSecret("ABCD-EFGH-...");
 const restored2 = decryptPrivateKeyWithRecovery(backup, secret);
 ```
 
+### Hashing (SHA-3 / SHA-2)
+
+Public, one-shot digest functions — intended for **public** data only, such as
+key fingerprints, safety numbers, and key-transparency-log entries. Each takes
+**base64-encoded input** and returns the digest as **base64**. Decode with
+`atob`, or re-encode to hex, if you need a hex fingerprint.
+
+`sha3_512` is the recommended default (highest assurance, NIST Cat-5). The
+others let you match an existing format.
+
+```js
+import { sha3_512, sha3_256, sha256, sha512 } from "@f0rest8/metamorphic-crypto";
+
+const dataBase64 = btoa("public key bytes");
+const digestBase64 = sha3_512(dataBase64); // 64-byte digest, base64
+
+// Need hex? decode the base64 digest:
+const hex = [...atob(digestBase64)].map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+```
+
+**Domain separation (recommended for fingerprints / transparency logs).** Use
+`sha3_512WithContext` to bind a digest to a versioned context label, so the same
+bytes hashed for different purposes can never collide or be reinterpreted across
+contexts. It is exactly as strong as `sha3_512`:
+
+```js
+import { sha3_512WithContext } from "@f0rest8/metamorphic-crypto";
+
+const dataBase64 = btoa("public key bytes");
+const fingerprint = sha3_512WithContext("mosslet/key-fingerprint/v1", dataBase64);
+```
+
+Stable wire format (reproduce exactly to match native/Elixir):
+`SHA3-512( u64_be(len(context_utf8)) || context_utf8 || data )`.
+
+> **Do not hash secrets with these.** A bare hash makes no guarantees about its
+> inputs, and the hashing path intentionally adds no zeroize/constant-time
+> ceremony — wiping a transient copy of already-public data adds cost without
+> protection. To process secret material (passwords, private keys), use the
+> right construction instead: this package's Argon2id `deriveSessionKey` for
+> password-based derivation, or a dedicated KDF/MAC.
+
 ## Security levels
 
 | Level | ML-KEM | NIST Category | Equivalent | Default |

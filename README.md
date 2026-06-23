@@ -11,6 +11,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ KEM** (ML-KEM-768 + X25519) — NIST Cat-3 post-quantum key encapsulation (default)
 - **Hybrid PQ KEM** (ML-KEM-1024 + X25519) — NIST Cat-5 post-quantum key encapsulation (opt-in)
 - **Argon2id KDF** — password-based key derivation (libsodium INTERACTIVE parameters)
+- **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
 
@@ -85,6 +86,68 @@ let sealed5 = hybrid_seal_1024(b"context_key_bytes", &kp5.public_key).unwrap();
 let opened5 = hybrid_open(&sealed5, &kp5.secret_key).unwrap(); // auto-detects level
 ```
 
+## Hashing
+
+Public, one-shot digest functions over the already-present, audited `sha3` and
+`sha2` dependencies. These are intended for **public** data only — key
+fingerprints / safety numbers and key-transparency-log entries — where both the
+input (e.g. a public key) and the output digest are meant to be public.
+
+`sha3_512` is the recommended default (NIST Cat-5, ~256-bit collision
+resistance, consistent with the crate's Keccak-based combiner). `sha3_256`,
+`sha256`, and `sha512` are provided so integrators can match an existing format.
+
+```rust
+use metamorphic_crypto::{sha3_512, sha3_256, sha256, sha512};
+
+// Take raw bytes, return fixed-size byte arrays.
+let digest: [u8; 64] = sha3_512(b"public key bytes"); // recommended default
+let d256:   [u8; 32] = sha3_256(b"...");
+let s256:   [u8; 32] = sha256(b"...");   // SHA-2 interop
+let s512:   [u8; 64] = sha512(b"...");   // SHA-2 interop
+
+// Encode the digest yourself when needed:
+use metamorphic_crypto::b64;
+let fingerprint_b64 = b64::encode(&digest);
+```
+
+### Domain separation (recommended for fingerprints / transparency logs)
+
+For key fingerprints, safety numbers, and key-transparency-log entries, prefer
+`sha3_512_with_context`, which binds the digest to a versioned context label so
+the same bytes hashed for different purposes can never collide or be
+reinterpreted across contexts. It is exactly as strong as `sha3_512` — it *is*
+SHA3-512, over an unambiguously framed message — and makes intent explicit:
+
+```rust
+use metamorphic_crypto::sha3_512_with_context;
+
+let fp  = sha3_512_with_context("mosslet/key-fingerprint/v1", pubkey_bytes);
+let log = sha3_512_with_context("mosslet/log-entry/v1", entry_bytes);
+// fp and log are unrelated even if the byte inputs coincide.
+```
+
+Stable wire format (reproduce exactly for cross-language parity):
+
+```text
+SHA3-512( u64_be(len(context_utf8)) || context_utf8 || data )
+```
+
+The 8-byte big-endian length prefix makes the `(context, data)` boundary
+unambiguous (no boundary-confusion collisions). Use a versioned namespace label.
+
+Encoding: the native functions take `&[u8]` and return raw byte arrays — encode
+to base64 or hex at the call site. The WASM bindings take/return base64 to match
+the rest of the WASM API (see below).
+
+**Do not hash secrets with these.** A bare hash makes no guarantees about its
+inputs, and (consistent with the rest of the crate) the hashing path adds no
+zeroize/constant-time ceremony — wiping a transient copy of already-public data
+would add cost without protection. If you need to process secret material
+(passwords, private keys), use the right construction instead — this crate's
+Argon2id `derive_session_key` for password-based derivation, or a dedicated
+KDF/MAC. The encryption APIs that handle secrets already zeroize on drop.
+
 ## WASM (browser)
 
 ```bash
@@ -98,6 +161,22 @@ await init('/path/to/metamorphic_crypto_bg.wasm');
 
 const key = deriveSessionKey(password, saltBase64);
 const ciphertext = encryptSecretboxString("hello", key);
+```
+
+### Hashing (WASM)
+
+Digest exports take base64-encoded input and return the digest as base64. Decode
+or re-encode to hex on the JS side if a hex fingerprint is required.
+
+```js
+import init, { sha3_512, sha3_512WithContext } from './pkg/metamorphic_crypto.js';
+await init();
+
+const dataB64 = btoa("public key bytes");
+const digestB64 = sha3_512(dataB64); // also: sha3_256, sha256, sha512
+
+// Domain-separated (recommended for fingerprints / transparency logs):
+const fp = sha3_512WithContext("mosslet/key-fingerprint/v1", dataB64);
 ```
 
 ## Tests
