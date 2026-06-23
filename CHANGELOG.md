@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.4.0 (unreleased)
+
+- Add a public hashing API (additive, non-breaking). Thin one-shot wrappers over
+  the already-present, audited `sha3` dependency and a new `sha2` dependency.
+  - New Rust module `hash`, re-exported at the crate root:
+    `sha3_512` (recommended default, NIST Cat-5), `sha3_256`, `sha256`, `sha512`.
+    Each takes `&[u8]` and returns a fixed-size byte array (`[u8; 64]` / `[u8; 32]`).
+  - New domain-separated variant `sha3_512_with_context(context, data)` —
+    recommended for key fingerprints, safety numbers, and key-transparency-log
+    entries. Binds the digest to a versioned context label so the same bytes
+    hashed for different purposes cannot collide or be cross-interpreted. Wire
+    format: `SHA3-512( u64_be(len(context_utf8)) || context_utf8 || data )` (an
+    8-byte big-endian length prefix removes boundary ambiguity). As strong as
+    `sha3_512`; it *is* SHA3-512 over a framed message.
+  - New WASM exports: `sha3_512`, `sha3_256`, `sha256`, `sha512`, and
+    `sha3_512WithContext` — take base64-encoded input, return the digest as
+    base64 (consistent with the rest of the WASM API).
+  - Intended for public, non-secret digests (e.g. key fingerprints / safety
+    numbers). A digest is not secret-bearing, so no zeroize/constant-time
+    ceremony is added; this is called out explicitly in the docs.
+  - Tests: NIST known-answer vectors for all four functions, native⇄WASM base64
+    parity vectors, and proptest determinism/length properties.
+  - Dependencies: add `sha2` 0.11 (RustCrypto, shares `digest` 0.11 with the
+    existing `sha3` 0.11 — no second `digest`/`keccak` version, SBOM stays clean).
+- All existing APIs unchanged — fully backward compatible.
+
 ## v0.3.7 (2026-06-10)
 
 - No functional changes to the crate; output is byte-identical to v0.3.6.
