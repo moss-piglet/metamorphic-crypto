@@ -176,6 +176,38 @@ Stable wire format (reproduce exactly to match native/Elixir):
 > right construction instead: this package's Argon2id `deriveSessionKey` for
 > password-based derivation, or a dedicated KDF/MAC.
 
+### Hybrid PQ signatures (ML-DSA + Ed25519)
+
+Composite digital signatures: every message is signed by **both** ML-DSA
+(FIPS 204) and Ed25519 (RFC 8032), and `verify` returns `true` only if **both**
+component signatures are valid (strict AND). Keys and signatures are base64; the
+message is **base64** and `context` is a UTF-8 string.
+
+```js
+import { generateSigningKeyPair, sign, verify, deriveSigningPublicKey } from "@f0rest8/metamorphic-crypto";
+
+const kp = generateSigningKeyPair("cat3"); // { publicKey, secretKey } — Cat-3 default
+const msg = btoa("transparency log entry");
+const sig = sign(msg, "metamorphic/sign/v1", kp.secretKey);
+const ok = verify(msg, "metamorphic/sign/v1", sig, kp.publicKey); // true
+
+// Re-derive the public key from a backed-up secret key:
+const pk = deriveSigningPublicKey(kp.secretKey); // === kp.publicKey
+```
+
+Levels are `"cat2"` (ML-DSA-44), `"cat3"` (ML-DSA-65, default), and `"cat5"`
+(ML-DSA-87); `verify` auto-detects the level from the signature. ML-DSA uses the
+hedged/randomized FIPS 204 mode, so signature **bytes are non-reproducible**,
+but key derivation and the domain-separation framing
+(`u64_be(len(context)) || context || message`) are deterministic and identical
+across native Rust, WASM, and the Elixir NIF.
+
+> **Audit posture.** `ed25519-dalek` (2.x) is mature and widely deployed.
+> `ml-dsa` (0.1.x, RustCrypto FIPS 204) is new and **not yet independently
+> audited** — it is included as defense-in-depth on top of Ed25519, so the
+> composite remains at least as strong as Ed25519 even if a flaw is found in the
+> young post-quantum implementation. Pinned and tracked for the FIPS-mode roadmap.
+
 ## Security levels
 
 | Level | ML-KEM | NIST Category | Equivalent | Default |

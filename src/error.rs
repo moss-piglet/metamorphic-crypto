@@ -42,6 +42,10 @@ pub enum CryptoError {
     #[error("hybrid KEM: {0}")]
     Hybrid(String),
 
+    /// An error in the hybrid PQ signature layer.
+    #[error("signature: {0}")]
+    Signature(String),
+
     /// Decrypted bytes are not valid UTF-8.
     #[error("UTF-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
