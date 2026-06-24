@@ -27,10 +27,30 @@
 //! | Cat-3 | ML-DSA-65| 3             | ~AES-192   | `0x02`      | Yes     |
 //! | Cat-5 | ML-DSA-87| 5             | ~AES-256   | `0x03`      | No      |
 //!
-//! Cat-3 is the default, mirroring this crate's KEM default posture. The
-//! version tags are an **independent namespace** local to this module — they
-//! happen to share byte values with the KEM tags in [`crate::hybrid`] but are
-//! never mixed (signatures and ciphertexts are distinct artifacts).
+//! Cat-3 is the default, mirroring this crate's KEM default posture.
+//!
+//! ### About the version tags
+//!
+//! The version tag is a **per-artifact-type wire-format version**, *not* a
+//! global NIST-category code. A signature tag only ever appears as the first
+//! byte of a signature / key blob produced by this module, is parsed only by
+//! [`verify`] / [`derive_public_key`], and is never handed to the KEM / seal
+//! code. Signatures and ciphertexts are distinct artifacts processed by
+//! distinct functions, so a signature tag can never be confused with a
+//! sealed-box or hybrid-KEM byte — regardless of its value.
+//!
+//! By design these tags **agree with the KEM tags in [`crate::hybrid`] on every
+//! level the two families share**: Cat-3 = `0x02` and Cat-5 = `0x03` in both.
+//! The single divergence is at `0x01`, which here denotes Cat-2 (ML-DSA-44)
+//! while on the KEM side `0x01` denotes Cat-1 (ML-KEM-512). This is unavoidable:
+//! NIST standardizes ML-KEM at categories {1, 3, 5} but ML-DSA at {2, 3, 5}, so
+//! the two families have different lowest rungs and "tag == category" cannot
+//! hold for both.
+//!
+//! These bytes are **not legacy sentinels**, either. The pre-PQ `box_seal`
+//! ciphertext format is *unversioned* — its first byte is a random ephemeral
+//! public-key byte, not a reserved tag — so there is no `0x00`/`0x01` legacy
+//! marker anywhere for these values to clash with.
 //!
 //! ## Signing mode (hedged / randomized ML-DSA)
 //!
