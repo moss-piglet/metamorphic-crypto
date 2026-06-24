@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.5.0 (unreleased)
+
+- Add a hybrid post-quantum **signature** API (additive, non-breaking). This is
+  the signing counterpart to the existing hybrid KEM: a *composite* signature
+  that signs every message with **both** ML-DSA (FIPS 204) **and** Ed25519
+  (RFC 8032), and verifies only if **both** components are valid (strict AND).
+  An attacker must break both a lattice scheme and an elliptic-curve scheme, and
+  cannot strip one algorithm to downgrade the other.
+  - New Rust module `sign`, re-exported at the crate root:
+    `generate_signing_keypair` (Cat-3 default), `generate_signing_keypair_44`
+    (Cat-2), `generate_signing_keypair_87` (Cat-5),
+    `generate_signing_keypair_with_level`, `derive_public_key`, `sign`,
+    `verify`, plus `HybridSignatureKeyPair`, `SignatureLevel`, and the
+    `SIGN_CONTEXT_V1` convention label.
+  - Security levels (the full standardized ML-DSA range, each + Ed25519):
+    Cat-2 = ML-DSA-44 (`0x01`), Cat-3 = ML-DSA-65 (`0x02`, default),
+    Cat-5 = ML-DSA-87 (`0x03`). NIST standardizes ML-DSA only at categories
+    2/3/5. No SLH-DSA (FIPS 205) yet.
+  - Signing mode is **hedged/randomized** ML-DSA (FIPS 204 default and most
+    conservative; resilient to RNG failure and side-channel/fault-hardened).
+    Ed25519 is deterministic per RFC 8032. Signature *bytes* are therefore
+    non-reproducible, but the wire format (layout, tags, key derivation,
+    framing) is fully deterministic and pinned.
+  - Domain separation reuses the exact `sha3_512_with_context` framing:
+    `signed_msg = I2OSP(len(context), 8) || context_utf8 || message`, signed
+    directly by both algorithms (ML-DSA with an empty native context).
+  - Wire format:
+    `signature  = tag || ed25519_sig (64 B) || ml_dsa_sig`;
+    `public_key = tag || ed25519_pk  (32 B) || ml_dsa_pk`;
+    `secret_key = tag || ed25519_seed (32 B) || ml_dsa_seed (32 B)` (65 B), base64.
+    The `HybridSignatureKeyPair` secret is zeroized on drop.
+  - New WASM exports: `generateSigningKeyPair`, `deriveSigningPublicKey`,
+    `sign`, `verify` — base64 in/out (message base64, `context` a UTF-8 string),
+    consistent with the rest of the WASM API.
+  - Tests: per-level roundtrips, strict-AND tamper checks (both halves),
+    wrong-key / tampered-message / context-separation / cross-level failures,
+    version-tag and size pins, randomized-but-both-valid, framing pins, and a
+    `tests/sign_vectors.rs` cross-language pin file (deterministic public-key
+    derivation + framing). Plus a proptest roundtrip over arbitrary messages.
+  - Dependencies: add `ed25519-dalek` 2.x (mature, audited) and `ml-dsa` 0.1.x
+    (RustCrypto FIPS 204; **not yet independently audited** — pinned and tracked
+    for the FIPS-mode roadmap; documented honestly in `README`/module docs).
+    `ml-dsa` shares `sha3` 0.11 with the existing tree (no new keccak version).
+- All existing APIs unchanged — fully backward compatible. Encryption
+  (KEM / secretbox / Argon2id) is untouched.
+
 ## v0.4.0 (unreleased)
 
 - Add a public hashing API (additive, non-breaking). Thin one-shot wrappers over

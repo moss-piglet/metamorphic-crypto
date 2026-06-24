@@ -11,6 +11,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ KEM** (ML-KEM-768 + X25519) — NIST Cat-3 post-quantum key encapsulation (default)
 - **Hybrid PQ KEM** (ML-KEM-1024 + X25519) — NIST Cat-5 post-quantum key encapsulation (opt-in)
 - **Argon2id KDF** — password-based key derivation (libsodium INTERACTIVE parameters)
+- **Hybrid PQ signatures** (ML-DSA + Ed25519) — NIST Cat-2/3/5 composite digital signatures (strict AND)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
@@ -148,6 +149,75 @@ would add cost without protection. If you need to process secret material
 Argon2id `derive_session_key` for password-based derivation, or a dedicated
 KDF/MAC. The encryption APIs that handle secrets already zeroize on drop.
 
+## Hybrid PQ signatures
+
+Composite digital signatures: every message is signed by **both** ML-DSA
+(FIPS 204) **and** Ed25519 (RFC 8032), and verification requires **both** to be
+valid (strict AND). An attacker has to break both a lattice scheme and an
+elliptic-curve scheme to forge, and cannot strip one algorithm to downgrade the
+other. This is the signing counterpart to the hybrid KEM above.
+
+```rust
+use metamorphic_crypto::{generate_signing_keypair, sign, verify, SIGN_CONTEXT_V1};
+
+let kp = generate_signing_keypair(); // Cat-3 (ML-DSA-65 + Ed25519), default
+let sig = sign(b"transparency log entry", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+assert!(verify(b"transparency log entry", SIGN_CONTEXT_V1, &sig, &kp.public_key).unwrap());
+
+// Re-derive the public key from a backed-up secret key:
+use metamorphic_crypto::derive_public_key;
+assert_eq!(derive_public_key(&kp.secret_key).unwrap(), kp.public_key);
+```
+
+Cat-2 (`generate_signing_keypair_44`) and Cat-5 (`generate_signing_keypair_87`)
+are also available; `verify` auto-detects the level from the signature's version
+tag. The `secret_key` field is zeroized on drop.
+
+### Signing levels and mode
+
+| Level | ML-DSA    | NIST Category | Equivalent | Version Tag | Default |
+|-------|-----------|---------------|------------|-------------|---------|
+| Cat-2 | ML-DSA-44 | 2             | ~AES-128   | `0x01`      | No      |
+| Cat-3 | ML-DSA-65 | 3             | ~AES-192   | `0x02`      | Yes     |
+| Cat-5 | ML-DSA-87 | 5             | ~AES-256   | `0x03`      | No      |
+
+ML-DSA is signed with the **hedged (randomized)** variant — FIPS 204's default
+and most conservative mode (resilient to RNG failure, hardened against fault /
+side-channel attacks that deterministic lattice signing invites). Ed25519 is
+deterministic per RFC 8032. As a result signature **bytes are non-reproducible**,
+but the **wire format is deterministic and pinned**.
+
+### Domain separation and wire format
+
+Both algorithms sign the same domain-separated message, framed exactly like
+`sha3_512_with_context` (a length-prefixed context):
+
+```text
+signed_msg = I2OSP(len(context_utf8), 8) || context_utf8 || message
+```
+
+ML-DSA signs `signed_msg` with an empty native context, so the framing is
+identical for both algorithms and across every language binding. Byte layout
+(Ed25519 first, fixed-size, so the ML-DSA tail needs no length prefix):
+
+```text
+signature  = tag || ed25519_sig (64 B) || ml_dsa_sig (2420 / 3309 / 4627 B)
+public_key = tag || ed25519_pk  (32 B) || ml_dsa_pk  (1312 / 1952 / 2592 B)
+secret_key = tag || ed25519_seed(32 B) || ml_dsa_seed(32 B)              = 65 B
+```
+
+### Dependency audit posture
+
+| Dependency      | Version | Audited             | Notes |
+|-----------------|---------|---------------------|-------|
+| `ed25519-dalek` | 2.x     | Yes (mature)        | Widely deployed RFC 8032 implementation. |
+| `ml-dsa`        | 0.1.x   | **No** (RustCrypto) | FIPS 204 (final). New crate, not yet independently audited. Pinned; tracked for the FIPS-mode roadmap. |
+
+ML-DSA is defense-in-depth on top of the independently-strong Ed25519: even if a
+flaw were found in the young `ml-dsa` implementation, the composite remains at
+least as strong as Ed25519. This is stated honestly so integrators can choose
+while the post-quantum implementation matures toward audit / FIPS validation.
+
 ## WASM (browser)
 
 ```bash
@@ -177,6 +247,21 @@ const digestB64 = sha3_512(dataB64); // also: sha3_256, sha256, sha512
 
 // Domain-separated (recommended for fingerprints / transparency logs):
 const fp = sha3_512WithContext("mosslet/key-fingerprint/v1", dataB64);
+```
+
+### Signatures (WASM)
+
+Keys and signatures are base64; the message is base64 and `context` is a UTF-8
+string. `verify` returns `true` only if both component signatures are valid.
+
+```js
+import init, { generateSigningKeyPair, sign, verify } from './pkg/metamorphic_crypto.js';
+await init();
+
+const kp = generateSigningKeyPair("cat3"); // { publicKey, secretKey }
+const msg = btoa("transparency log entry");
+const sig = sign(msg, "metamorphic/sign/v1", kp.secretKey);
+const ok = verify(msg, "metamorphic/sign/v1", sig, kp.publicKey); // true
 ```
 
 ## Tests

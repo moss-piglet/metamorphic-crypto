@@ -9,7 +9,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::hybrid::SecurityLevel;
-use crate::{b64, box_seal, hash, hybrid, kdf, keys, recovery, seal, secretbox};
+use crate::{b64, box_seal, hash, hybrid, kdf, keys, recovery, seal, secretbox, sign};
 // ---------------------------------------------------------------------------
 // Key derivation
 // ---------------------------------------------------------------------------
@@ -308,6 +308,60 @@ pub fn sha512(data_b64: &str) -> Result<String, JsValue> {
 }
 
 // ---------------------------------------------------------------------------
+// Hybrid PQ signatures (ML-DSA + Ed25519 composite)
+// ---------------------------------------------------------------------------
+//
+// Keys and signatures are base64 strings using the wire format documented in
+// `crate::sign`. The message to sign/verify is passed as base64 (consistent
+// with the rest of this WASM API); `context` is a plain UTF-8 string.
+
+/// Generate a hybrid signing keypair. Returns JSON: `{ publicKey, secretKey }`.
+///
+/// `level` is `"cat2"` (ML-DSA-44), `"cat3"` (ML-DSA-65, default), or `"cat5"`
+/// (ML-DSA-87). Empty/null defaults to Cat-3.
+#[wasm_bindgen(js_name = "generateSigningKeyPair")]
+pub fn generate_signing_keypair(level: &str) -> Result<JsValue, JsValue> {
+    let lvl = parse_signature_level(level)?;
+    let kp = sign::generate_signing_keypair_with_level(lvl);
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &kp.public_key.clone().into()).unwrap();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &kp.secret_key.clone().into()).unwrap();
+    Ok(obj.into())
+}
+
+/// Re-derive the base64 public key from a base64 hybrid secret key.
+#[wasm_bindgen(js_name = "deriveSigningPublicKey")]
+pub fn derive_signing_public_key(secret_key_b64: &str) -> Result<String, JsValue> {
+    sign::derive_public_key(secret_key_b64).map_err(to_js)
+}
+
+/// Sign base64 `message` under `context` with a base64 hybrid `secret_key`.
+/// Returns the composite signature as base64.
+#[wasm_bindgen(js_name = "sign")]
+pub fn sign_message(
+    message_b64: &str,
+    context: &str,
+    secret_key_b64: &str,
+) -> Result<String, JsValue> {
+    let msg = b64::decode(message_b64).map_err(to_js)?;
+    sign::sign(&msg, context, secret_key_b64).map_err(to_js)
+}
+
+/// Verify a base64 composite `signature` over base64 `message`/`context`
+/// against a base64 `public_key`. Returns `true` only if **both** the Ed25519
+/// and ML-DSA components verify (strict AND).
+#[wasm_bindgen(js_name = "verify")]
+pub fn verify(
+    message_b64: &str,
+    context: &str,
+    signature_b64: &str,
+    public_key_b64: &str,
+) -> Result<bool, JsValue> {
+    let msg = b64::decode(message_b64).map_err(to_js)?;
+    sign::verify(&msg, context, signature_b64, public_key_b64).map_err(to_js)
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -327,4 +381,19 @@ fn parse_security_level(level: &str) -> Result<SecurityLevel, JsValue> {
 /// Convert a CryptoError into a JsValue (thrown as a JS Error).
 fn to_js(e: crate::CryptoError) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+/// Parse a JS string into a `SignatureLevel`.
+///
+/// Accepts `"cat2"`, `"cat3"`, `"cat5"` (case-insensitive). Defaults to Cat-3
+/// on empty/null.
+fn parse_signature_level(level: &str) -> Result<sign::SignatureLevel, JsValue> {
+    match level.to_ascii_lowercase().as_str() {
+        "cat2" => Ok(sign::SignatureLevel::Cat2),
+        "" | "cat3" => Ok(sign::SignatureLevel::Cat3),
+        "cat5" => Ok(sign::SignatureLevel::Cat5),
+        other => Err(JsValue::from_str(&format!(
+            "invalid signature level \"{other}\": expected \"cat2\", \"cat3\", or \"cat5\""
+        ))),
+    }
 }
