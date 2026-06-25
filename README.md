@@ -8,6 +8,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 
 - **Secretbox** (XSalsa20-Poly1305) — symmetric authenticated encryption
 - **Sealed box** (X25519) — anonymous public-key encryption (libsodium-compatible)
+- **Hybrid PQ KEM** (ML-KEM-512 + X25519) — NIST Cat-1 post-quantum key encapsulation (opt-in)
 - **Hybrid PQ KEM** (ML-KEM-768 + X25519) — NIST Cat-3 post-quantum key encapsulation (default)
 - **Hybrid PQ KEM** (ML-KEM-1024 + X25519) — NIST Cat-5 post-quantum key encapsulation (opt-in)
 - **Argon2id KDF** — password-based key derivation (libsodium INTERACTIVE parameters)
@@ -20,10 +21,11 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 
 | Level | ML-KEM | NIST Category | Equivalent | Version Tag | Default |
 |-------|--------|---------------|------------|-------------|---------|
+| Cat-1 | 512    | 1             | ~AES-128   | `0x01`      | No      |
 | Cat-3 | 768    | 3             | ~AES-192   | `0x02`      | Yes     |
 | Cat-5 | 1024   | 5             | ~AES-256   | `0x03`      | No      |
 
-Both levels use the same combiner construction and X25519 classical fallback. `hybrid_open` auto-detects the level from the version tag byte — old and new ciphertext coexist seamlessly.
+NIST (FIPS 203) standardizes ML-KEM only at categories 1/3/5 — there is no category-2/4 parameter set, so none is offered. All levels use the same combiner construction. The classical half is **X25519 (~Cat-1 classical) at every tier** — it does not scale up with the ML-KEM parameter set; at Cat-3/Cat-5 the post-quantum half dominates and X25519 is the classical floor (standard hybrid-KEM practice: a break requires defeating *both* halves). `hybrid_open` auto-detects the level from the version tag byte — old and new ciphertext coexist seamlessly.
 
 ## Security properties
 
@@ -40,6 +42,12 @@ The hybrid combiner matches the format used by [`@noble/post-quantum`](https://g
 ```
 Seed expansion:  SHAKE256(seed_32) → 96 bytes [ML-KEM seed (64) || X25519 sk (32)]
 Combiner:        SHA3-256(ss_mlkem || ss_x25519 || ct_x25519 || pk_x25519 || label)
+```
+
+### Cat-1 (ML-KEM-512, opt-in)
+```
+Public key:   ML-KEM-512 ek (800 B) || X25519 pk (32 B) = 832 bytes
+Ciphertext:   0x01 || ML-KEM-512 ct (768 B) || X25519 eph pk (32 B) || nonce (24 B) || secretbox ct
 ```
 
 ### Cat-3 (ML-KEM-768, default)
@@ -68,6 +76,7 @@ Ciphertext:   0x03 || ML-KEM-1024 ct (1568 B) || X25519 eph pk (32 B) || nonce (
 ```rust
 use metamorphic_crypto::{generate_key, encrypt_secretbox_string, decrypt_secretbox_to_string};
 use metamorphic_crypto::{generate_hybrid_keypair, hybrid_seal, hybrid_open};
+use metamorphic_crypto::{generate_hybrid_keypair_512, hybrid_seal_512};
 use metamorphic_crypto::{generate_hybrid_keypair_1024, hybrid_seal_1024};
 
 // Symmetric encryption
@@ -85,6 +94,11 @@ let opened = hybrid_open(&sealed, &kp.secret_key).unwrap();
 let kp5 = generate_hybrid_keypair_1024();
 let sealed5 = hybrid_seal_1024(b"context_key_bytes", &kp5.public_key).unwrap();
 let opened5 = hybrid_open(&sealed5, &kp5.secret_key).unwrap(); // auto-detects level
+
+// Hybrid PQ seal (Cat-1)
+let kp1 = generate_hybrid_keypair_512();
+let sealed1 = hybrid_seal_512(b"context_key_bytes", &kp1.public_key).unwrap();
+let opened1 = hybrid_open(&sealed1, &kp1.secret_key).unwrap(); // auto-detects level
 ```
 
 ## Hashing

@@ -1,14 +1,46 @@
-//! Hybrid post-quantum KEM: ML-KEM-768 + X25519 (Cat-3) and ML-KEM-1024 + X25519 (Cat-5).
+//! Hybrid post-quantum KEM: ML-KEM-512 + X25519 (Cat-1), ML-KEM-768 + X25519
+//! (Cat-3, default), and ML-KEM-1024 + X25519 (Cat-5).
 //!
 //! This module implements hybrid KEMs combining ML-KEM with X25519, ensuring
-//! byte-level compatibility with existing production ciphertext.
+//! byte-level compatibility with existing production ciphertext. The three tiers
+//! span the **full standardized ML-KEM range** — NIST (FIPS 203) defines ML-KEM
+//! only at categories 1, 3, and 5 (512 / 768 / 1024). There is **no** category-2
+//! or category-4 ML-KEM parameter set, so none is offered here.
 //!
 //! ## Security Levels
 //!
 //! | Level | ML-KEM | NIST Category | Equivalent | Version Tag |
 //! |-------|--------|---------------|------------|-------------|
+//! | Cat-1 | 512    | 1             | ~AES-128   | `0x01`      |
 //! | Cat-3 | 768    | 3             | ~AES-192   | `0x02`      |
 //! | Cat-5 | 1024   | 5             | ~AES-256   | `0x03`      |
+//!
+//! ### About the version tags
+//!
+//! The version tag is a **per-artifact-type wire-format version**, *not* a
+//! global NIST-category code. A KEM tag only ever appears as the first byte of a
+//! hybrid-KEM ciphertext produced by this module and is parsed only by
+//! [`hybrid_open`] / [`is_hybrid_ciphertext`]; it is never handed to the
+//! signature code. The KEM tags form a dense ordered sequence — Cat-1 = `0x01`,
+//! Cat-3 = `0x02`, Cat-5 = `0x03`.
+//!
+//! By design these tags **agree with the signature tags in [`crate::sign`] on
+//! every level the two families share**: Cat-3 = `0x02` and Cat-5 = `0x03` in
+//! both. The single divergence is at `0x01`, which here denotes Cat-1
+//! (ML-KEM-512) while on the signature side `0x01` denotes Cat-2 (ML-DSA-44).
+//! This is unavoidable: NIST standardizes ML-KEM at categories {1, 3, 5} but
+//! ML-DSA at {2, 3, 5}, so the two families have different lowest rungs and
+//! "tag == category" cannot hold for both.
+//!
+//! These bytes are **not legacy sentinels**, either. The pre-PQ `box_seal`
+//! ciphertext format is *unversioned* — its output is `ephemeral_pk (32) ||
+//! box_ct`, so its first byte is a random X25519 public-key byte, not a reserved
+//! tag — so there is no `0x00`/`0x01` legacy marker anywhere for these values to
+//! clash with. Both [`is_hybrid_ciphertext`] and [`hybrid_open`] additionally
+//! enforce a minimum-length gate per tier, so a legacy ciphertext whose random
+//! first byte happens to be `0x01` cannot be mis-routed as a Cat-1 hybrid
+//! ciphertext; [`crate::seal::unseal_from_user`] also falls back to the legacy
+//! opener if a hybrid open fails, closing the residual length-collision case.
 //!
 //! ## Construction (from noble source)
 //!
@@ -16,30 +48,41 @@
 //! combineKEMS(
 //!   seedLen = 32,
 //!   outputLen = 32,
-//!   expandSeed = SHAKE256(seed, dkLen=96 | 128),
+//!   expandSeed = SHAKE256(seed, dkLen=96),
 //!   combiner = SHA3-256(ss_mlkem || ss_x25519 || ct_x25519 || pk_x25519 || b"\\.//^\\"),
-//!   ml_kem{768|1024},
+//!   ml_kem{512|768|1024},
 //!   ecdhKem(x25519)
 //! )
 //! ```
 //!
-//! ## Key layout (Cat-3 / Cat-5)
+//! ## Key layout (Cat-1 / Cat-3 / Cat-5)
 //!
-//! | Component | Cat-3 (768) | Cat-5 (1024) | Description |
-//! |-----------|-------------|--------------|-------------|
-//! | Secret key (seed) | 32 bytes | 32 bytes | Root seed expanded via SHAKE256 |
-//! | Public key | 1216 bytes | 1600 bytes | ML-KEM ek ‖ X25519 pk (32) |
-//! | Ciphertext | 1120 bytes | 1600 bytes | ML-KEM ct ‖ X25519 ephemeral pk (32) |
-//! | Shared secret | 32 bytes | 32 bytes | SHA3-256 combiner output |
+//! | Component | Cat-1 (512) | Cat-3 (768) | Cat-5 (1024) | Description |
+//! |-----------|-------------|-------------|--------------|-------------|
+//! | Secret key (seed) | 32 bytes | 32 bytes | 32 bytes | Root seed expanded via SHAKE256 |
+//! | Public key | 832 bytes | 1216 bytes | 1600 bytes | ML-KEM ek ‖ X25519 pk (32) |
+//! | Ciphertext | 800 bytes | 1120 bytes | 1600 bytes | ML-KEM ct ‖ X25519 ephemeral pk (32) |
+//! | Shared secret | 32 bytes | 32 bytes | 32 bytes | SHA3-256 combiner output |
+//!
+//! ## Classical partner caveat
+//!
+//! The classical half is **X25519 (~Cat-1 classical) at every tier** — it does
+//! not scale up with the ML-KEM parameter set. At Cat-3 and Cat-5 the
+//! post-quantum half dominates and X25519 is the classical floor; this is
+//! standard hybrid-KEM practice (the hybrid is at least as strong as its
+//! strongest component, and a break requires defeating *both* halves). If you
+//! need a higher classical margin, that is a separate (currently non-standard
+//! for X25519) concern.
 //!
 //! ## Sealed-box ciphertext format
 //!
 //! ```text
-//! v2: 0x02 || hybrid_ciphertext_768 (1120 B) || nonce (24 B) || secretbox_ct
+//! v1: 0x01 || hybrid_ciphertext_512  (800 B)  || nonce (24 B) || secretbox_ct
+//! v2: 0x02 || hybrid_ciphertext_768  (1120 B) || nonce (24 B) || secretbox_ct
 //! v3: 0x03 || hybrid_ciphertext_1024 (1600 B) || nonce (24 B) || secretbox_ct
 //! ```
 
-use ml_kem::{Decapsulate, MlKem768, MlKem1024};
+use ml_kem::{Decapsulate, MlKem512, MlKem768, MlKem1024};
 use ml_kem::{DecapsulationKey, EncapsulationKey, KeyExport};
 use sha3::Shake256;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
@@ -55,6 +98,8 @@ use crate::b64;
 
 // === Constants ===
 
+/// Version tag for Cat-1 hybrid ciphertext (ML-KEM-512).
+const VERSION_HYBRID_512: u8 = 0x01;
 /// Version tag for Cat-3 hybrid ciphertext (ML-KEM-768).
 const VERSION_HYBRID_768: u8 = 0x02;
 /// Version tag for Cat-5 hybrid ciphertext (ML-KEM-1024).
@@ -70,6 +115,26 @@ const MAC_LEN: usize = 16;
 /// Noble's domain-separation label.
 const LABEL: &[u8] = b"\\.//^\\";
 
+// ML-KEM-512 (Cat-1)
+/// ML-KEM-512 encapsulation key size.
+const MLKEM512_EK_LEN: usize = 800;
+/// ML-KEM-512 ciphertext size.
+const MLKEM512_CT_LEN: usize = 768;
+/// ML-KEM-512 seed portion (64 bytes).
+const MLKEM512_SEED_LEN: usize = 64;
+/// Expanded seed for Cat-1: ML-KEM seed (64) + X25519 secret (32).
+const EXPANDED_SEED_512_LEN: usize = 96;
+/// Combined public key for Cat-1: ML-KEM ek (800) + X25519 pk (32).
+const COMBINED_PK_512_LEN: usize = MLKEM512_EK_LEN + X25519_LEN;
+/// Combined ciphertext for Cat-1: ML-KEM ct (768) + X25519 ephemeral pk (32).
+const COMBINED_CT_512_LEN: usize = MLKEM512_CT_LEN + X25519_LEN;
+/// Minimum sealed-box length for a Cat-1 hybrid ciphertext (empty plaintext:
+/// version tag + combined ct + nonce + Poly1305 MAC). Single source of truth
+/// shared by the routing check ([`is_hybrid_ciphertext`]) and the open gate
+/// ([`hybrid_open_512`]); keeping them in lockstep is what prevents a legacy
+/// ciphertext from being mis-routed.
+const MIN_HYBRID_512_LEN: usize = 1 + COMBINED_CT_512_LEN + NONCE_LEN + MAC_LEN;
+
 // ML-KEM-768 (Cat-3)
 /// ML-KEM-768 encapsulation key size.
 const MLKEM768_EK_LEN: usize = 1184;
@@ -83,6 +148,9 @@ const EXPANDED_SEED_768_LEN: usize = 96;
 const COMBINED_PK_768_LEN: usize = MLKEM768_EK_LEN + X25519_LEN;
 /// Combined ciphertext for Cat-3: ML-KEM ct (1088) + X25519 ephemeral pk (32).
 const COMBINED_CT_768_LEN: usize = MLKEM768_CT_LEN + X25519_LEN;
+/// Minimum sealed-box length for a Cat-3 hybrid ciphertext (empty plaintext).
+/// Shared by [`is_hybrid_ciphertext`] and [`hybrid_open_768`].
+const MIN_HYBRID_768_LEN: usize = 1 + COMBINED_CT_768_LEN + NONCE_LEN + MAC_LEN;
 
 // ML-KEM-1024 (Cat-5)
 /// ML-KEM-1024 encapsulation key size.
@@ -97,6 +165,9 @@ const EXPANDED_SEED_1024_LEN: usize = 96;
 const COMBINED_PK_1024_LEN: usize = MLKEM1024_EK_LEN + X25519_LEN;
 /// Combined ciphertext for Cat-5: ML-KEM ct (1568) + X25519 ephemeral pk (32).
 const COMBINED_CT_1024_LEN: usize = MLKEM1024_CT_LEN + X25519_LEN;
+/// Minimum sealed-box length for a Cat-5 hybrid ciphertext (empty plaintext).
+/// Shared by [`is_hybrid_ciphertext`] and [`hybrid_open_1024`].
+const MIN_HYBRID_1024_LEN: usize = 1 + COMBINED_CT_1024_LEN + NONCE_LEN + MAC_LEN;
 
 // === Types ===
 
@@ -112,6 +183,8 @@ pub struct HybridKeyPair {
 /// Security level for hybrid PQ operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SecurityLevel {
+    /// NIST Category 1: ML-KEM-512 + X25519 (~AES-128).
+    Cat1,
     /// NIST Category 3: ML-KEM-768 + X25519 (~AES-192). Default.
     #[default]
     Cat3,
@@ -182,6 +255,20 @@ fn secretbox_decrypt(
         .map_err(|_| CryptoError::Decryption)
 }
 
+// === Public API: Cat-1 (ML-KEM-512) ===
+
+/// Generate a hybrid ML-KEM-512 + X25519 keypair (Cat-1).
+pub fn generate_hybrid_keypair_512() -> HybridKeyPair {
+    generate_hybrid_keypair_with_level(SecurityLevel::Cat1)
+}
+
+/// Seal `plaintext` to a Cat-1 hybrid public key (ML-KEM-512).
+///
+/// Returns base64: `0x01 || hybrid_ct (800 B) || nonce (24 B) || secretbox_ct`.
+pub fn hybrid_seal_512(plaintext: &[u8], combined_pk_b64: &str) -> Result<String, CryptoError> {
+    hybrid_seal_with_level(plaintext, combined_pk_b64, SecurityLevel::Cat1)
+}
+
 // === Public API: Cat-3 (ML-KEM-768, default) ===
 
 /// Generate a hybrid ML-KEM-768 + X25519 keypair (Cat-3, default).
@@ -196,10 +283,11 @@ pub fn hybrid_seal(plaintext: &[u8], combined_pk_b64: &str) -> Result<String, Cr
     hybrid_seal_with_level(plaintext, combined_pk_b64, SecurityLevel::Cat3)
 }
 
-/// Open a Cat-3 or Cat-5 hybrid-sealed ciphertext. Auto-detects from version tag.
+/// Open a Cat-1, Cat-3, or Cat-5 hybrid-sealed ciphertext. Auto-detects from version tag.
 pub fn hybrid_open(ct_b64: &str, seed_b64: &str) -> Result<Vec<u8>, CryptoError> {
     let combined = b64::decode(ct_b64)?;
     match combined.first() {
+        Some(&VERSION_HYBRID_512) => hybrid_open_512(&combined, seed_b64),
         Some(&VERSION_HYBRID_768) => hybrid_open_768(&combined, seed_b64),
         Some(&VERSION_HYBRID_1024) => hybrid_open_1024(&combined, seed_b64),
         _ => Err(CryptoError::Hybrid(
@@ -208,16 +296,28 @@ pub fn hybrid_open(ct_b64: &str, seed_b64: &str) -> Result<Vec<u8>, CryptoError>
     }
 }
 
-/// Returns `true` if the base64 blob starts with a hybrid version tag (0x02 or 0x03).
+/// Returns `true` if the base64 blob is a hybrid ciphertext: its first byte is a
+/// known version tag (`0x01`, `0x02`, or `0x03`) **and** its total length is at
+/// least the minimum for that tier.
+///
+/// The length check (matching the exact minimum-length gate enforced by
+/// [`hybrid_open`]) is what definitively distinguishes a hybrid ciphertext from a
+/// legacy `box_seal` ciphertext whose random first byte happens to collide with a
+/// tag value: a real hybrid ciphertext is always `>=` its tier minimum, while a
+/// short legacy ciphertext below that bound is correctly rejected here. (A legacy
+/// ciphertext that collides on *both* the first byte *and* a hybrid-matching
+/// length is still handled safely by the fallback in
+/// [`crate::seal::unseal_from_user`].)
 pub fn is_hybrid_ciphertext(ct_b64: &str) -> bool {
-    b64::decode(ct_b64)
-        .map(|bytes| {
-            matches!(
-                bytes.first(),
-                Some(&VERSION_HYBRID_768) | Some(&VERSION_HYBRID_1024)
-            )
-        })
-        .unwrap_or(false)
+    let Ok(bytes) = b64::decode(ct_b64) else {
+        return false;
+    };
+    match bytes.first() {
+        Some(&VERSION_HYBRID_512) => bytes.len() >= MIN_HYBRID_512_LEN,
+        Some(&VERSION_HYBRID_768) => bytes.len() >= MIN_HYBRID_768_LEN,
+        Some(&VERSION_HYBRID_1024) => bytes.len() >= MIN_HYBRID_1024_LEN,
+        _ => false,
+    }
 }
 
 // === Public API: Cat-5 (ML-KEM-1024) ===
@@ -242,10 +342,12 @@ pub fn generate_hybrid_keypair_with_level(level: SecurityLevel) -> HybridKeyPair
     random_bytes(&mut seed);
 
     let expanded_len = match level {
+        SecurityLevel::Cat1 => EXPANDED_SEED_512_LEN,
         SecurityLevel::Cat3 => EXPANDED_SEED_768_LEN,
         SecurityLevel::Cat5 => EXPANDED_SEED_1024_LEN,
     };
     let mlkem_seed_len = match level {
+        SecurityLevel::Cat1 => MLKEM512_SEED_LEN,
         SecurityLevel::Cat3 => MLKEM768_SEED_LEN,
         SecurityLevel::Cat5 => MLKEM1024_SEED_LEN,
     };
@@ -258,6 +360,17 @@ pub fn generate_hybrid_keypair_with_level(level: SecurityLevel) -> HybridKeyPair
     let x25519_pk = X25519PublicKey::from(&x25519_sk);
 
     let combined_pk = match level {
+        SecurityLevel::Cat1 => {
+            let mlkem_seed: [u8; MLKEM512_SEED_LEN] =
+                expanded[..MLKEM512_SEED_LEN].try_into().unwrap();
+            let dk = DecapsulationKey::<MlKem512>::from_seed(mlkem_seed.into());
+            let ek = dk.encapsulation_key();
+            let ek_bytes = ek.to_bytes();
+            let mut pk = Vec::with_capacity(COMBINED_PK_512_LEN);
+            pk.extend_from_slice(&ek_bytes);
+            pk.extend_from_slice(x25519_pk.as_bytes());
+            pk
+        }
         SecurityLevel::Cat3 => {
             let mlkem_seed: [u8; MLKEM768_SEED_LEN] =
                 expanded[..MLKEM768_SEED_LEN].try_into().unwrap();
@@ -301,6 +414,7 @@ pub fn hybrid_seal_with_level(
     let pk_bytes = b64::decode(combined_pk_b64)?;
 
     let (expected_pk_len, mlkem_ek_len, version_tag) = match level {
+        SecurityLevel::Cat1 => (COMBINED_PK_512_LEN, MLKEM512_EK_LEN, VERSION_HYBRID_512),
         SecurityLevel::Cat3 => (COMBINED_PK_768_LEN, MLKEM768_EK_LEN, VERSION_HYBRID_768),
         SecurityLevel::Cat5 => (COMBINED_PK_1024_LEN, MLKEM1024_EK_LEN, VERSION_HYBRID_1024),
     };
@@ -321,6 +435,16 @@ pub fn hybrid_seal_with_level(
     random_bytes(&mut mlkem_coins);
 
     let (mlkem_ct_bytes, ss_mlkem_bytes) = match level {
+        SecurityLevel::Cat1 => {
+            let ek = EncapsulationKey::<MlKem512>::new(
+                mlkem_ek_bytes
+                    .try_into()
+                    .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-512 ek".into()))?,
+            )
+            .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-512 encapsulation key".into()))?;
+            let (ct, ss) = ek.encapsulate_deterministic(&mlkem_coins.into());
+            (ct.as_slice().to_vec(), ss.as_slice().to_vec())
+        }
         SecurityLevel::Cat3 => {
             let ek = EncapsulationKey::<MlKem768>::new(
                 mlkem_ek_bytes
@@ -378,6 +502,62 @@ pub fn hybrid_seal_with_level(
     Ok(b64::encode(&out))
 }
 
+// === Internal: Cat-1 open ===
+
+fn hybrid_open_512(combined: &[u8], seed_b64: &str) -> Result<Vec<u8>, CryptoError> {
+    let seed_bytes = b64::decode(seed_b64)?;
+    if seed_bytes.len() != SEED_LEN {
+        return Err(CryptoError::InvalidLength {
+            expected: SEED_LEN,
+            got: seed_bytes.len(),
+        });
+    }
+    if combined.len() < MIN_HYBRID_512_LEN {
+        return Err(CryptoError::TooShort);
+    }
+
+    let seed: [u8; SEED_LEN] = seed_bytes.try_into().unwrap();
+    let mut expanded = expand_seed(&seed, EXPANDED_SEED_512_LEN);
+    let mlkem_seed: [u8; MLKEM512_SEED_LEN] = expanded[..MLKEM512_SEED_LEN].try_into().unwrap();
+    let x25519_sk_bytes: [u8; X25519_LEN] = expanded[MLKEM512_SEED_LEN..].try_into().unwrap();
+    expanded.zeroize();
+
+    // Parse ciphertext
+    let mlkem_ct = &combined[1..1 + MLKEM512_CT_LEN];
+    let x25519_eph_pk_bytes: [u8; X25519_LEN] = combined
+        [1 + MLKEM512_CT_LEN..1 + COMBINED_CT_512_LEN]
+        .try_into()
+        .unwrap();
+    let nonce_slice = &combined[1 + COMBINED_CT_512_LEN..1 + COMBINED_CT_512_LEN + NONCE_LEN];
+    let encrypted = &combined[1 + COMBINED_CT_512_LEN + NONCE_LEN..];
+
+    // ML-KEM-512 decapsulate
+    let dk = DecapsulationKey::<MlKem512>::from_seed(mlkem_seed.into());
+    let kem_ct = mlkem_ct
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-512 ciphertext".into()))?;
+    let ss_mlkem = dk.decapsulate(kem_ct);
+
+    // X25519 decapsulate
+    let x25519_sk = X25519StaticSecret::from(x25519_sk_bytes);
+    let x25519_eph_pk = X25519PublicKey::from(x25519_eph_pk_bytes);
+    let ss_x25519 = x25519_sk.diffie_hellman(&x25519_eph_pk);
+
+    let x25519_pk = X25519PublicKey::from(&x25519_sk);
+    let pk_x25519: [u8; X25519_LEN] = *x25519_pk.as_bytes();
+
+    let mut shared_secret = combine(
+        ss_mlkem.as_slice(),
+        ss_x25519.as_bytes(),
+        &x25519_eph_pk_bytes,
+        &pk_x25519,
+    );
+
+    let result = secretbox_decrypt(&shared_secret, nonce_slice, encrypted);
+    shared_secret.zeroize();
+    result
+}
+
 // === Internal: Cat-3 open ===
 
 fn hybrid_open_768(combined: &[u8], seed_b64: &str) -> Result<Vec<u8>, CryptoError> {
@@ -388,7 +568,7 @@ fn hybrid_open_768(combined: &[u8], seed_b64: &str) -> Result<Vec<u8>, CryptoErr
             got: seed_bytes.len(),
         });
     }
-    if combined.len() < 1 + COMBINED_CT_768_LEN + NONCE_LEN + MAC_LEN {
+    if combined.len() < MIN_HYBRID_768_LEN {
         return Err(CryptoError::TooShort);
     }
 
@@ -444,7 +624,7 @@ fn hybrid_open_1024(combined: &[u8], seed_b64: &str) -> Result<Vec<u8>, CryptoEr
             got: seed_bytes.len(),
         });
     }
-    if combined.len() < 1 + COMBINED_CT_1024_LEN + NONCE_LEN + MAC_LEN {
+    if combined.len() < MIN_HYBRID_1024_LEN {
         return Err(CryptoError::TooShort);
     }
 
@@ -557,6 +737,69 @@ mod tests {
         );
     }
 
+    // === Cat-1 (new) ===
+
+    #[test]
+    fn cat1_roundtrip() {
+        let kp = generate_hybrid_keypair_512();
+        let pt = b"32-byte symmetric context key!!!";
+        let ct = hybrid_seal_512(pt, &kp.public_key).unwrap();
+        assert!(is_hybrid_ciphertext(&ct));
+        let opened = hybrid_open(&ct, &kp.secret_key).unwrap();
+        assert_eq!(opened, pt);
+    }
+
+    #[test]
+    fn cat1_version_tag() {
+        let kp = generate_hybrid_keypair_512();
+        let raw = b64::decode(&hybrid_seal_512(b"x", &kp.public_key).unwrap()).unwrap();
+        assert_eq!(raw[0], VERSION_HYBRID_512);
+    }
+
+    #[test]
+    fn cat1_wrong_key_fails() {
+        let kp1 = generate_hybrid_keypair_512();
+        let kp2 = generate_hybrid_keypair_512();
+        let ct = hybrid_seal_512(b"x", &kp1.public_key).unwrap();
+        assert!(hybrid_open(&ct, &kp2.secret_key).is_err());
+    }
+
+    #[test]
+    fn cat1_key_sizes() {
+        let kp = generate_hybrid_keypair_512();
+        let pk = b64::decode(&kp.public_key).unwrap();
+        let sk = b64::decode(&kp.secret_key).unwrap();
+        assert_eq!(pk.len(), COMBINED_PK_512_LEN); // 832
+        assert_eq!(sk.len(), SEED_LEN); // 32
+    }
+
+    #[test]
+    fn cat1_ciphertext_size() {
+        let kp = generate_hybrid_keypair_512();
+        let pt = b"exactly 32 bytes of key material";
+        let raw = b64::decode(&hybrid_seal_512(pt, &kp.public_key).unwrap()).unwrap();
+        // 1 + 800 + 24 + 32 + 16 = 873
+        assert_eq!(
+            raw.len(),
+            1 + COMBINED_CT_512_LEN + NONCE_LEN + 32 + MAC_LEN
+        );
+    }
+
+    #[test]
+    fn cat1_nondeterministic() {
+        let kp = generate_hybrid_keypair_512();
+        let c1 = hybrid_seal_512(b"x", &kp.public_key).unwrap();
+        let c2 = hybrid_seal_512(b"x", &kp.public_key).unwrap();
+        assert_ne!(c1, c2);
+    }
+
+    #[test]
+    fn cat1_empty_plaintext() {
+        let kp = generate_hybrid_keypair_512();
+        let ct = hybrid_seal_512(b"", &kp.public_key).unwrap();
+        assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), b"");
+    }
+
     // === Cat-5 (new) ===
 
     #[test]
@@ -639,9 +882,58 @@ mod tests {
     }
 
     #[test]
+    fn cat1_ct_cannot_open_with_cat3_key() {
+        let kp1 = generate_hybrid_keypair_512();
+        let kp3 = generate_hybrid_keypair();
+        let ct = hybrid_seal_512(b"test", &kp1.public_key).unwrap();
+        assert!(hybrid_open(&ct, &kp3.secret_key).is_err());
+    }
+
+    #[test]
+    fn cat1_ct_cannot_open_with_cat5_key() {
+        let kp1 = generate_hybrid_keypair_512();
+        let kp5 = generate_hybrid_keypair_1024();
+        let ct = hybrid_seal_512(b"test", &kp1.public_key).unwrap();
+        assert!(hybrid_open(&ct, &kp5.secret_key).is_err());
+    }
+
+    #[test]
     fn legacy_not_hybrid() {
-        let legacy = b64::encode(&[0x01, 0x02, 0x03]);
+        // A short blob whose first byte is not any hybrid tag.
+        let legacy = b64::encode(&[0x42, 0x02, 0x03]);
         assert!(!is_hybrid_ciphertext(&legacy));
+    }
+
+    #[test]
+    fn legacy_starting_with_0x01_not_misdetected_as_cat1() {
+        // `is_hybrid_ciphertext` is length-aware: a legacy-sized (~80B) blob whose
+        // first byte collides with the Cat-1 tag (0x01) is NOT classified as
+        // hybrid, because it is far below the Cat-1 minimum length
+        // (1 + 768 + 32 + 24 + 16 = 841B). In practice Mosslet legacy cts (~80B
+        // sealing a 32B key) can never reach a hybrid length.
+        let mut legacy = vec![0x01u8]; // collides with the Cat-1 tag
+        legacy.extend_from_slice(&[0u8; 79]); // total 80 bytes, legacy-sized
+        let legacy_b64 = b64::encode(&legacy);
+        assert!(!is_hybrid_ciphertext(&legacy_b64));
+        // And `hybrid_open`'s own length gate independently rejects it.
+        let kp = generate_hybrid_keypair_512();
+        let err = hybrid_open(&legacy_b64, &kp.secret_key).unwrap_err();
+        assert!(matches!(err, CryptoError::TooShort));
+    }
+
+    #[test]
+    fn long_0x01_blob_below_cat1_min_not_hybrid() {
+        // A 0x01-leading blob just under the Cat-1 minimum is still not hybrid.
+        let min_cat1 = MIN_HYBRID_512_LEN; // 841
+        let mut blob = vec![0x01u8];
+        blob.extend_from_slice(&vec![0u8; min_cat1 - 2]); // total = min - 1
+        assert!(!is_hybrid_ciphertext(&b64::encode(&blob)));
+        // At exactly the minimum, the tag+length check classifies it as hybrid
+        // (disambiguation past this point is handled by unseal_from_user's
+        // fallback to the legacy opener).
+        let mut at_min = vec![0x01u8];
+        at_min.extend_from_slice(&vec![0u8; min_cat1 - 1]); // total = min
+        assert!(is_hybrid_ciphertext(&b64::encode(&at_min)));
     }
 
     #[test]

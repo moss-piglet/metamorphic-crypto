@@ -1,6 +1,6 @@
 # @f0rest8/metamorphic-crypto
 
-Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM-768/1024 + X25519).
+Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM-512/768/1024 + X25519).
 
 Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.com) — privacy-first apps by [Moss Piglet Corporation](https://mosspiglet.dev) where all user data is encrypted client-side and the server only stores opaque ciphertext.
 
@@ -103,7 +103,17 @@ import { generateHybridKeyPair1024, sealForUserWithLevel } from "@f0rest8/metamo
 
 const pq5 = generateHybridKeyPair1024();  // { publicKey, secretKey } (ML-KEM-1024)
 const sealed = sealForUserWithLevel(plaintextBase64, x25519.publicKey, pq5.publicKey, "cat5");
-// unsealFromUser auto-detects Cat-3 vs Cat-5, no level param needed
+// unsealFromUser auto-detects Cat-1 vs Cat-3 vs Cat-5, no level param needed
+```
+
+### Cat-1 (ML-KEM-512, opt-in)
+
+```js
+import { generateHybridKeyPair512, sealForUserWithLevel } from "@f0rest8/metamorphic-crypto";
+
+const pq1 = generateHybridKeyPair512();  // { publicKey, secretKey } (ML-KEM-512)
+const sealed = sealForUserWithLevel(plaintextBase64, x25519.publicKey, pq1.publicKey, "cat1");
+// unsealFromUser auto-detects the level from the version tag, no level param needed
 ```
 
 ### Private key management
@@ -212,10 +222,11 @@ across native Rust, WASM, and the Elixir NIF.
 
 | Level | ML-KEM | NIST Category | Equivalent | Default |
 |-------|--------|---------------|------------|---------|
+| Cat-1 | 512    | 1             | ~AES-128   | No      |
 | Cat-3 | 768    | 3             | ~AES-192   | Yes     |
 | Cat-5 | 1024   | 5             | ~AES-256   | No      |
 
-Decryption always auto-detects the level from the ciphertext version tag.
+Decryption always auto-detects the level from the ciphertext version tag. NIST (FIPS 203) standardizes ML-KEM only at categories 1/3/5 — there is no category-2/4 set. The classical half is X25519 (~Cat-1 classical) at every tier; at Cat-3/Cat-5 the post-quantum half dominates and X25519 is the classical floor (standard hybrid-KEM practice).
 
 ## Security properties
 
