@@ -136,8 +136,21 @@ use ml_dsa::{
 use std::convert::Infallible;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+// CNSA 2.0 matched classical signature partners (v0.7.0).
+use ed448_goldilocks::{
+    Signature as Ed448Signature, SigningKey as Ed448SigningKey, VerifyingKey as Ed448VerifyingKey,
+};
+use p521::ecdsa::signature::RandomizedSigner;
+use p521::ecdsa::{
+    Signature as P521Signature, SigningKey as P521SigningKey, VerifyingKey as P521VerifyingKey,
+};
+use p521::elliptic_curve::FieldBytes;
+use p521::elliptic_curve::ops::Reduce;
+use p521::{NistP521, NonZeroScalar, Scalar, SecretKey as P521SecretKey};
+
 use crate::CryptoError;
 use crate::b64;
+use crate::suite::Suite;
 
 // === Constants ===
 
@@ -153,6 +166,33 @@ const VERSION_CAT2: u8 = 0x01;
 const VERSION_CAT3: u8 = 0x02;
 /// Version tag for Cat-5 (ML-DSA-87 + Ed25519). Local to this module.
 const VERSION_CAT5: u8 = 0x03;
+
+// === CNSA 2.0 signature suites (v0.7.0) ===
+//
+// New, additive version tags for the opt-in suites. Tag-space is shared with
+// the KEM side (#311) but signatures are distinct artifacts parsed only by
+// `verify` / `derive_public_key`, so there is no cross-family confusion.
+
+/// `0x10` — PureCnsa2 signature (ML-DSA-87 only, Cat-5).
+const VERSION_SIG_PURE_CNSA2: u8 = 0x10;
+/// `0x13` — HybridMatched Cat-3 signature (ML-DSA-65 + Ed448).
+const VERSION_SIG_MATCHED_CAT3: u8 = 0x13;
+/// `0x14` — HybridMatched Cat-5 signature (ML-DSA-87 + ECDSA-P-521, hedged).
+const VERSION_SIG_MATCHED_CAT5: u8 = 0x14;
+
+/// Ed448 seed / public-key length (RFC 8032).
+const ED448_SEED_LEN: usize = 57;
+/// Ed448 public-key length.
+const ED448_PK_LEN: usize = 57;
+/// Ed448 signature length.
+const ED448_SIG_LEN: usize = 114;
+
+/// ECDSA-P-521 secret seed length (wide bytes reduced mod n).
+const P521_SK_LEN: usize = 66;
+/// ECDSA-P-521 uncompressed SEC1 public-key length.
+const P521_PK_LEN: usize = 133;
+/// ECDSA-P-521 fixed-size signature length (`r(66) || s(66)`).
+const P521_SIG_LEN: usize = 132;
 
 /// Ed25519 seed (secret key) length.
 const ED25519_SEED_LEN: usize = 32;
@@ -332,6 +372,145 @@ fn mldsa_verify<P: MlDsaParams>(pk: &[u8], framed: &[u8], sig: &[u8]) -> bool {
     }
 }
 
+// === CNSA 2.0 suites: matched classical helpers ===
+
+/// Reduce 66 seed bytes to a non-zero P-521 scalar and wrap as an ECDSA key.
+fn p521_signing_key_from_bytes(bytes: &[u8; P521_SK_LEN]) -> P521SigningKey {
+    let fb: FieldBytes<NistP521> = (*bytes).into();
+    let scalar = <Scalar as Reduce<FieldBytes<NistP521>>>::reduce(&fb);
+    let nz: NonZeroScalar =
+        Option::from(NonZeroScalar::new(scalar)).expect("P-521 scalar reduced to zero");
+    P521SigningKey::from(P521SecretKey::from(nz))
+}
+
+/// Ed448 keygen (deterministic from a 57-byte seed). Returns `(pk(57), SigningKey)`.
+fn ed448_keypair(
+    seed: &[u8; ED448_SEED_LEN],
+) -> Result<([u8; ED448_PK_LEN], Ed448SigningKey), CryptoError> {
+    let sk = Ed448SigningKey::try_from(&seed[..])
+        .map_err(|_| CryptoError::Signature("invalid Ed448 seed".into()))?;
+    let pk = sk.verifying_key().to_bytes();
+    Ok((pk, sk))
+}
+
+// === CNSA 2.0 suites: keygen ===
+
+/// Generate a signing keypair for the given [`Suite`] + [`SignatureLevel`].
+///
+/// - `Suite::Hybrid` (any level) and `Suite::HybridMatched` at Cat-2 delegate to
+///   the existing [`generate_signing_keypair_with_level`] (ML-DSA + Ed25519;
+///   identical bytes/tags).
+/// - `Suite::HybridMatched` at Cat-3 (ML-DSA-65 + Ed448) / Cat-5 (ML-DSA-87 +
+///   ECDSA-P-521) and `Suite::PureCnsa2` at Cat-5 (ML-DSA-87 only) produce the
+///   new tagged layouts.
+///
+/// Returns an error for unsupported combinations (PureCnsa2 below Cat-5).
+pub fn generate_signing_keypair_suite(
+    suite: Suite,
+    level: SignatureLevel,
+) -> Result<HybridSignatureKeyPair, CryptoError> {
+    match (suite, level) {
+        (Suite::Hybrid, _) | (Suite::HybridMatched, SignatureLevel::Cat2) => {
+            Ok(generate_signing_keypair_with_level(level))
+        }
+        (Suite::HybridMatched, SignatureLevel::Cat3) => Ok(generate_matched_cat3_keypair()),
+        (Suite::HybridMatched, SignatureLevel::Cat5) => Ok(generate_matched_cat5_keypair()),
+        (Suite::PureCnsa2, SignatureLevel::Cat5) => Ok(generate_pure_cnsa2_keypair()),
+        (Suite::PureCnsa2, _) => Err(CryptoError::Signature(
+            "PureCnsa2 signatures are Cat-5 (ML-DSA-87) only in v0.7.0".into(),
+        )),
+    }
+}
+
+fn generate_pure_cnsa2_keypair() -> HybridSignatureKeyPair {
+    let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+    random_bytes(&mut ml_seed_bytes);
+    let ml_seed: B32 = ml_seed_bytes.into();
+    let ml_pk = mldsa_public_key::<MlDsa87>(&ml_seed);
+
+    let mut public_key = Vec::with_capacity(1 + ml_pk.len());
+    public_key.push(VERSION_SIG_PURE_CNSA2);
+    public_key.extend_from_slice(&ml_pk);
+
+    let mut secret_key = Vec::with_capacity(1 + MLDSA_SEED_LEN);
+    secret_key.push(VERSION_SIG_PURE_CNSA2);
+    secret_key.extend_from_slice(&ml_seed_bytes);
+
+    let pair = HybridSignatureKeyPair {
+        public_key: b64::encode(&public_key),
+        secret_key: b64::encode(&secret_key),
+    };
+    ml_seed_bytes.zeroize();
+    secret_key.zeroize();
+    pair
+}
+
+fn generate_matched_cat3_keypair() -> HybridSignatureKeyPair {
+    let mut ed_seed = [0u8; ED448_SEED_LEN];
+    random_bytes(&mut ed_seed);
+    let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+    random_bytes(&mut ml_seed_bytes);
+
+    let (ed_pk, _) = ed448_keypair(&ed_seed).expect("freshly generated Ed448 seed");
+    let ml_seed: B32 = ml_seed_bytes.into();
+    let ml_pk = mldsa_public_key::<MlDsa65>(&ml_seed);
+
+    let mut public_key = Vec::with_capacity(1 + ED448_PK_LEN + ml_pk.len());
+    public_key.push(VERSION_SIG_MATCHED_CAT3);
+    public_key.extend_from_slice(&ed_pk);
+    public_key.extend_from_slice(&ml_pk);
+
+    let mut secret_key = Vec::with_capacity(1 + ED448_SEED_LEN + MLDSA_SEED_LEN);
+    secret_key.push(VERSION_SIG_MATCHED_CAT3);
+    secret_key.extend_from_slice(&ed_seed);
+    secret_key.extend_from_slice(&ml_seed_bytes);
+
+    let pair = HybridSignatureKeyPair {
+        public_key: b64::encode(&public_key),
+        secret_key: b64::encode(&secret_key),
+    };
+    ed_seed.zeroize();
+    ml_seed_bytes.zeroize();
+    secret_key.zeroize();
+    pair
+}
+
+fn generate_matched_cat5_keypair() -> HybridSignatureKeyPair {
+    let mut ec_seed = [0u8; P521_SK_LEN];
+    random_bytes(&mut ec_seed);
+    let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+    random_bytes(&mut ml_seed_bytes);
+
+    let signing = p521_signing_key_from_bytes(&ec_seed);
+    let ec_pk: [u8; P521_PK_LEN] = signing
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .expect("uncompressed P-521 public key is 133 bytes");
+    let ml_seed: B32 = ml_seed_bytes.into();
+    let ml_pk = mldsa_public_key::<MlDsa87>(&ml_seed);
+
+    let mut public_key = Vec::with_capacity(1 + P521_PK_LEN + ml_pk.len());
+    public_key.push(VERSION_SIG_MATCHED_CAT5);
+    public_key.extend_from_slice(&ec_pk);
+    public_key.extend_from_slice(&ml_pk);
+
+    let mut secret_key = Vec::with_capacity(1 + P521_SK_LEN + MLDSA_SEED_LEN);
+    secret_key.push(VERSION_SIG_MATCHED_CAT5);
+    secret_key.extend_from_slice(&ec_seed);
+    secret_key.extend_from_slice(&ml_seed_bytes);
+
+    let pair = HybridSignatureKeyPair {
+        public_key: b64::encode(&public_key),
+        secret_key: b64::encode(&secret_key),
+    };
+    ec_seed.zeroize();
+    ml_seed_bytes.zeroize();
+    secret_key.zeroize();
+    pair
+}
+
 // === Public API: keygen ===
 
 /// Generate a hybrid ML-DSA-65 + Ed25519 signing keypair (Cat-3, default).
@@ -403,6 +582,13 @@ pub fn generate_signing_keypair_with_level(level: SignatureLevel) -> HybridSigna
 /// secret key's version tag.
 pub fn derive_public_key(secret_key_b64: &str) -> Result<String, CryptoError> {
     let mut sk_bytes = b64::decode(secret_key_b64)?;
+    if let Some(&tag) = sk_bytes.first() {
+        if is_new_suite_tag(tag) {
+            let out = derive_public_key_new_suite(&sk_bytes);
+            sk_bytes.zeroize();
+            return out;
+        }
+    }
     let level = level_from_tag(sk_bytes.first())?;
 
     if sk_bytes.len() != SECRET_KEY_LEN {
@@ -451,6 +637,13 @@ pub fn derive_public_key(secret_key_b64: &str) -> Result<String, CryptoError> {
 /// versioned label) for `context`.
 pub fn sign(message: &[u8], context: &str, secret_key_b64: &str) -> Result<String, CryptoError> {
     let mut sk_bytes = b64::decode(secret_key_b64)?;
+    if let Some(&tag) = sk_bytes.first() {
+        if is_new_suite_tag(tag) {
+            let out = sign_new_suite(message, context, &sk_bytes);
+            sk_bytes.zeroize();
+            return out;
+        }
+    }
     let level = level_from_tag(sk_bytes.first())?;
 
     if sk_bytes.len() != SECRET_KEY_LEN {
@@ -506,6 +699,15 @@ pub fn verify(
     let sig = b64::decode(signature_b64)?;
     let pk = b64::decode(public_key_b64)?;
 
+    // CNSA-2.0 suites route on their own tags (no cross-family confusion).
+    match (sig.first(), pk.first()) {
+        (Some(&s), _) if is_new_suite_tag(s) => {
+            return verify_new_suite(message, context, &sig, &pk);
+        }
+        (_, Some(&p)) if is_new_suite_tag(p) => return Ok(false),
+        _ => {}
+    }
+
     let sig_level = level_from_tag(sig.first())?;
     let pk_level = level_from_tag(pk.first())?;
     // Mismatched levels => verification fails (no cross-level confusion).
@@ -542,6 +744,243 @@ pub fn verify(
 
     // Strict AND: both component signatures must verify.
     Ok(ed_ok && ml_ok)
+}
+
+// === CNSA 2.0 suites: sign / verify / derive ===
+
+/// Returns `true` if `tag` is one of the new CNSA-2.0 signature suite tags.
+fn is_new_suite_tag(tag: u8) -> bool {
+    matches!(
+        tag,
+        VERSION_SIG_PURE_CNSA2 | VERSION_SIG_MATCHED_CAT3 | VERSION_SIG_MATCHED_CAT5
+    )
+}
+
+fn sign_new_suite(message: &[u8], context: &str, sk: &[u8]) -> Result<String, CryptoError> {
+    let framed = frame(context, message);
+    match sk[0] {
+        VERSION_SIG_PURE_CNSA2 => {
+            if sk.len() != 1 + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1..]);
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_sig = mldsa_sign::<MlDsa87>(&ml_seed, &framed);
+            ml_seed_bytes.zeroize();
+            let mut out = Vec::with_capacity(1 + ml_sig.len());
+            out.push(VERSION_SIG_PURE_CNSA2);
+            out.extend_from_slice(&ml_sig);
+            Ok(b64::encode(&out))
+        }
+        VERSION_SIG_MATCHED_CAT3 => {
+            if sk.len() != 1 + ED448_SEED_LEN + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + ED448_SEED_LEN + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ed_seed = [0u8; ED448_SEED_LEN];
+            ed_seed.copy_from_slice(&sk[1..1 + ED448_SEED_LEN]);
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1 + ED448_SEED_LEN..]);
+
+            let (_, ed_sk) = ed448_keypair(&ed_seed)?;
+            let ed_sig = ed_sk.sign_raw(&framed).to_bytes();
+            ed_seed.zeroize();
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_sig = mldsa_sign::<MlDsa65>(&ml_seed, &framed);
+            ml_seed_bytes.zeroize();
+
+            let mut out = Vec::with_capacity(1 + ED448_SIG_LEN + ml_sig.len());
+            out.push(VERSION_SIG_MATCHED_CAT3);
+            out.extend_from_slice(&ed_sig);
+            out.extend_from_slice(&ml_sig);
+            Ok(b64::encode(&out))
+        }
+        VERSION_SIG_MATCHED_CAT5 => {
+            if sk.len() != 1 + P521_SK_LEN + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + P521_SK_LEN + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ec_seed = [0u8; P521_SK_LEN];
+            ec_seed.copy_from_slice(&sk[1..1 + P521_SK_LEN]);
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1 + P521_SK_LEN..]);
+
+            // Hedged RFC 6979 ECDSA: deterministic nonce + added OS entropy.
+            let signing = p521_signing_key_from_bytes(&ec_seed);
+            let ec_sig: P521Signature = signing
+                .try_sign_with_rng(&mut OsCsprng, &framed)
+                .map_err(|_| CryptoError::Signature("ECDSA-P-521 signing failed".into()))?;
+            let ec_sig_bytes = ec_sig.to_bytes();
+            ec_seed.zeroize();
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_sig = mldsa_sign::<MlDsa87>(&ml_seed, &framed);
+            ml_seed_bytes.zeroize();
+
+            let mut out = Vec::with_capacity(1 + P521_SIG_LEN + ml_sig.len());
+            out.push(VERSION_SIG_MATCHED_CAT5);
+            out.extend_from_slice(ec_sig_bytes.as_slice());
+            out.extend_from_slice(&ml_sig);
+            Ok(b64::encode(&out))
+        }
+        _ => Err(CryptoError::Signature("not a CNSA-2.0 suite tag".into())),
+    }
+}
+
+fn ed448_verify(pk: &[u8], framed: &[u8], sig: &[u8]) -> bool {
+    let Ok(pk_arr): Result<[u8; ED448_PK_LEN], _> = pk.try_into() else {
+        return false;
+    };
+    let Ok(vk) = Ed448VerifyingKey::from_bytes(&pk_arr) else {
+        return false;
+    };
+    let Ok(signature) = Ed448Signature::try_from(sig) else {
+        return false;
+    };
+    vk.verify_raw(&signature, framed).is_ok()
+}
+
+fn p521_ecdsa_verify(pk: &[u8], framed: &[u8], sig: &[u8]) -> bool {
+    let Ok(vk) = P521VerifyingKey::from_sec1_bytes(pk) else {
+        return false;
+    };
+    let Ok(signature) = P521Signature::from_slice(sig) else {
+        return false;
+    };
+    vk.verify(framed, &signature).is_ok()
+}
+
+fn verify_new_suite(
+    message: &[u8],
+    context: &str,
+    sig: &[u8],
+    pk: &[u8],
+) -> Result<bool, CryptoError> {
+    // Mismatched suite tags between signature and public key => fail (no
+    // cross-suite confusion / downgrade).
+    if sig[0] != pk[0] {
+        return Ok(false);
+    }
+    let framed = frame(context, message);
+    match sig[0] {
+        VERSION_SIG_PURE_CNSA2 => {
+            if sig.len() != 1 + MLDSA87_SIG_LEN || pk.len() != 1 + MLDSA87_PK_LEN {
+                return Ok(false);
+            }
+            Ok(mldsa_verify::<MlDsa87>(&pk[1..], &framed, &sig[1..]))
+        }
+        VERSION_SIG_MATCHED_CAT3 => {
+            if sig.len() != 1 + ED448_SIG_LEN + MLDSA65_SIG_LEN
+                || pk.len() != 1 + ED448_PK_LEN + MLDSA65_PK_LEN
+            {
+                return Ok(false);
+            }
+            let ed_ok = ed448_verify(
+                &pk[1..1 + ED448_PK_LEN],
+                &framed,
+                &sig[1..1 + ED448_SIG_LEN],
+            );
+            let ml_ok = mldsa_verify::<MlDsa65>(
+                &pk[1 + ED448_PK_LEN..],
+                &framed,
+                &sig[1 + ED448_SIG_LEN..],
+            );
+            Ok(ed_ok && ml_ok)
+        }
+        VERSION_SIG_MATCHED_CAT5 => {
+            if sig.len() != 1 + P521_SIG_LEN + MLDSA87_SIG_LEN
+                || pk.len() != 1 + P521_PK_LEN + MLDSA87_PK_LEN
+            {
+                return Ok(false);
+            }
+            let ec_ok =
+                p521_ecdsa_verify(&pk[1..1 + P521_PK_LEN], &framed, &sig[1..1 + P521_SIG_LEN]);
+            let ml_ok =
+                mldsa_verify::<MlDsa87>(&pk[1 + P521_PK_LEN..], &framed, &sig[1 + P521_SIG_LEN..]);
+            Ok(ec_ok && ml_ok)
+        }
+        _ => Err(CryptoError::Signature("not a CNSA-2.0 suite tag".into())),
+    }
+}
+
+fn derive_public_key_new_suite(sk: &[u8]) -> Result<String, CryptoError> {
+    match sk[0] {
+        VERSION_SIG_PURE_CNSA2 => {
+            if sk.len() != 1 + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1..]);
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_pk = mldsa_public_key::<MlDsa87>(&ml_seed);
+            ml_seed_bytes.zeroize();
+            let mut pk = Vec::with_capacity(1 + ml_pk.len());
+            pk.push(VERSION_SIG_PURE_CNSA2);
+            pk.extend_from_slice(&ml_pk);
+            Ok(b64::encode(&pk))
+        }
+        VERSION_SIG_MATCHED_CAT3 => {
+            if sk.len() != 1 + ED448_SEED_LEN + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + ED448_SEED_LEN + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ed_seed = [0u8; ED448_SEED_LEN];
+            ed_seed.copy_from_slice(&sk[1..1 + ED448_SEED_LEN]);
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1 + ED448_SEED_LEN..]);
+            let (ed_pk, _) = ed448_keypair(&ed_seed)?;
+            ed_seed.zeroize();
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_pk = mldsa_public_key::<MlDsa65>(&ml_seed);
+            ml_seed_bytes.zeroize();
+            let mut pk = Vec::with_capacity(1 + ED448_PK_LEN + ml_pk.len());
+            pk.push(VERSION_SIG_MATCHED_CAT3);
+            pk.extend_from_slice(&ed_pk);
+            pk.extend_from_slice(&ml_pk);
+            Ok(b64::encode(&pk))
+        }
+        VERSION_SIG_MATCHED_CAT5 => {
+            if sk.len() != 1 + P521_SK_LEN + MLDSA_SEED_LEN {
+                return Err(CryptoError::InvalidLength {
+                    expected: 1 + P521_SK_LEN + MLDSA_SEED_LEN,
+                    got: sk.len(),
+                });
+            }
+            let mut ec_seed = [0u8; P521_SK_LEN];
+            ec_seed.copy_from_slice(&sk[1..1 + P521_SK_LEN]);
+            let mut ml_seed_bytes = [0u8; MLDSA_SEED_LEN];
+            ml_seed_bytes.copy_from_slice(&sk[1 + P521_SK_LEN..]);
+            let signing = p521_signing_key_from_bytes(&ec_seed);
+            let ec_pk: [u8; P521_PK_LEN] = signing
+                .verifying_key()
+                .to_sec1_point(false)
+                .as_bytes()
+                .try_into()
+                .expect("uncompressed P-521 public key is 133 bytes");
+            ec_seed.zeroize();
+            let ml_seed: B32 = ml_seed_bytes.into();
+            let ml_pk = mldsa_public_key::<MlDsa87>(&ml_seed);
+            ml_seed_bytes.zeroize();
+            let mut pk = Vec::with_capacity(1 + P521_PK_LEN + ml_pk.len());
+            pk.push(VERSION_SIG_MATCHED_CAT5);
+            pk.extend_from_slice(&ec_pk);
+            pk.extend_from_slice(&ml_pk);
+            Ok(b64::encode(&pk))
+        }
+        _ => Err(CryptoError::Signature("not a CNSA-2.0 suite tag".into())),
+    }
 }
 
 #[cfg(test)]
@@ -762,5 +1201,136 @@ mod tests {
             let sig = sign(&msg, &ctx, &kp.secret_key).unwrap();
             prop_assert!(verify(&msg, &ctx, &sig, &kp.public_key).unwrap());
         }
+    }
+
+    // === CNSA 2.0 signature suites (v0.7.0) ===
+
+    fn suite_roundtrip(suite: Suite, level: SignatureLevel, tag: u8) {
+        let kp = generate_signing_keypair_suite(suite, level).unwrap();
+        assert_eq!(b64::decode(&kp.public_key).unwrap()[0], tag);
+        assert_eq!(b64::decode(&kp.secret_key).unwrap()[0], tag);
+        let sig = sign(
+            b"transparency-log checkpoint",
+            SIGN_CONTEXT_V1,
+            &kp.secret_key,
+        )
+        .unwrap();
+        assert_eq!(b64::decode(&sig).unwrap()[0], tag);
+        assert!(
+            verify(
+                b"transparency-log checkpoint",
+                SIGN_CONTEXT_V1,
+                &sig,
+                &kp.public_key
+            )
+            .unwrap()
+        );
+        // Tampered message fails.
+        assert!(!verify(b"tampered", SIGN_CONTEXT_V1, &sig, &kp.public_key).unwrap());
+        // derive_public_key reproduces the keygen public key.
+        assert_eq!(derive_public_key(&kp.secret_key).unwrap(), kp.public_key);
+    }
+
+    #[test]
+    fn pure_cnsa2_sign_roundtrip() {
+        suite_roundtrip(
+            Suite::PureCnsa2,
+            SignatureLevel::Cat5,
+            VERSION_SIG_PURE_CNSA2,
+        );
+    }
+
+    #[test]
+    fn matched_cat3_sign_roundtrip() {
+        suite_roundtrip(
+            Suite::HybridMatched,
+            SignatureLevel::Cat3,
+            VERSION_SIG_MATCHED_CAT3,
+        );
+    }
+
+    #[test]
+    fn matched_cat5_sign_roundtrip() {
+        suite_roundtrip(
+            Suite::HybridMatched,
+            SignatureLevel::Cat5,
+            VERSION_SIG_MATCHED_CAT5,
+        );
+    }
+
+    #[test]
+    fn pure_cnsa2_sign_only_cat5() {
+        assert!(generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat3).is_err());
+        assert!(generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat2).is_err());
+    }
+
+    #[test]
+    fn matched_cat2_is_plain_hybrid() {
+        // HybridMatched at Cat-2 reuses the existing Ed25519 construction (0x01).
+        let kp =
+            generate_signing_keypair_suite(Suite::HybridMatched, SignatureLevel::Cat2).unwrap();
+        assert_eq!(b64::decode(&kp.public_key).unwrap()[0], VERSION_CAT2);
+        let sig = sign(b"x", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+        assert!(verify(b"x", SIGN_CONTEXT_V1, &sig, &kp.public_key).unwrap());
+    }
+
+    #[test]
+    fn matched_sign_strict_and_requires_both_halves() {
+        // Corrupting either the classical or the ML-DSA half must fail (strict AND).
+        for (suite, level, classical_offset) in [
+            (Suite::HybridMatched, SignatureLevel::Cat3, 1usize), // inside Ed448 sig
+            (Suite::HybridMatched, SignatureLevel::Cat5, 1usize), // inside ECDSA sig
+        ] {
+            let kp = generate_signing_keypair_suite(suite, level).unwrap();
+            let good = b64::decode(&sign(b"m", SIGN_CONTEXT_V1, &kp.secret_key).unwrap()).unwrap();
+            // Corrupt classical half.
+            let mut bad_c = good.clone();
+            bad_c[classical_offset] ^= 0xFF;
+            assert!(!verify(b"m", SIGN_CONTEXT_V1, &b64::encode(&bad_c), &kp.public_key).unwrap());
+            // Corrupt ML-DSA tail (last byte).
+            let mut bad_ml = good.clone();
+            let last = bad_ml.len() - 1;
+            bad_ml[last] ^= 0xFF;
+            assert!(!verify(b"m", SIGN_CONTEXT_V1, &b64::encode(&bad_ml), &kp.public_key).unwrap());
+        }
+    }
+
+    #[test]
+    fn pure_cnsa2_nondeterministic_but_valid() {
+        let kp = generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat5).unwrap();
+        let s1 = sign(b"m", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+        let s2 = sign(b"m", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+        assert_ne!(s1, s2, "hedged ML-DSA => non-reproducible");
+        assert!(verify(b"m", SIGN_CONTEXT_V1, &s1, &kp.public_key).unwrap());
+        assert!(verify(b"m", SIGN_CONTEXT_V1, &s2, &kp.public_key).unwrap());
+    }
+
+    #[test]
+    fn sign_suites_context_separation_and_cross_key() {
+        for (suite, level) in [
+            (Suite::PureCnsa2, SignatureLevel::Cat5),
+            (Suite::HybridMatched, SignatureLevel::Cat3),
+            (Suite::HybridMatched, SignatureLevel::Cat5),
+        ] {
+            let kp = generate_signing_keypair_suite(suite, level).unwrap();
+            let kp2 = generate_signing_keypair_suite(suite, level).unwrap();
+            let sig = sign(b"m", "metamorphic/sign/v1", &kp.secret_key).unwrap();
+            // Different context fails.
+            assert!(!verify(b"m", "metamorphic/other/v1", &sig, &kp.public_key).unwrap());
+            // Wrong key fails.
+            assert!(!verify(b"m", "metamorphic/sign/v1", &sig, &kp2.public_key).unwrap());
+        }
+    }
+
+    #[test]
+    fn sign_cross_suite_pk_rejected() {
+        // A new-suite signature verified against a legacy public key (and vice
+        // versa) must fail rather than error-route into the wrong family.
+        let pure = generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat5).unwrap();
+        let legacy = generate_signing_keypair(); // Cat-3 hybrid (0x02)
+        let sig_pure = sign(b"m", SIGN_CONTEXT_V1, &pure.secret_key).unwrap();
+        assert!(!verify(b"m", SIGN_CONTEXT_V1, &sig_pure, &legacy.public_key).unwrap());
+        let sig_legacy = sign(b"m", SIGN_CONTEXT_V1, &legacy.secret_key).unwrap();
+        assert!(!verify(b"m", SIGN_CONTEXT_V1, &sig_legacy, &pure.public_key).unwrap());
     }
 }

@@ -39,6 +39,7 @@
 
 pub mod b64;
 pub mod box_seal;
+mod ecc;
 pub mod error;
 pub mod hash;
 pub mod hybrid;
@@ -48,6 +49,7 @@ pub mod recovery;
 pub mod seal;
 pub mod secretbox;
 pub mod sign;
+pub mod suite;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -60,8 +62,10 @@ pub use box_seal::{box_seal, box_seal_open};
 pub use hash::{sha3_256, sha3_512, sha3_512_with_context, sha256, sha512};
 pub use hybrid::{
     HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_512,
-    generate_hybrid_keypair_1024, generate_hybrid_keypair_with_level, hybrid_open, hybrid_seal,
-    hybrid_seal_512, hybrid_seal_1024, hybrid_seal_with_level, is_hybrid_ciphertext,
+    generate_hybrid_keypair_1024, generate_hybrid_keypair_suite,
+    generate_hybrid_keypair_with_level, hybrid_open, hybrid_open_with_context, hybrid_seal,
+    hybrid_seal_512, hybrid_seal_1024, hybrid_seal_suite, hybrid_seal_suite_with_context,
+    hybrid_seal_with_level, is_hybrid_ciphertext,
 };
 pub use kdf::derive_session_key;
 pub use keys::{
@@ -72,12 +76,15 @@ pub use recovery::{
     RecoveryKey, decrypt_private_key_with_recovery, encrypt_private_key_for_recovery,
     generate_recovery_key, recovery_key_to_secret,
 };
-pub use seal::{seal_for_user, seal_for_user_with_level, unseal_from_user};
+pub use seal::{
+    seal_for_user, seal_for_user_with_level, seal_for_user_with_suite, unseal_from_user,
+};
 pub use secretbox::{
     decrypt_secretbox, decrypt_secretbox_to_string, encrypt_secretbox, encrypt_secretbox_string,
 };
 pub use sign::{
     HybridSignatureKeyPair, SIGN_CONTEXT_V1, SignatureLevel, derive_public_key,
     generate_signing_keypair, generate_signing_keypair_44, generate_signing_keypair_87,
-    generate_signing_keypair_with_level, sign, verify,
+    generate_signing_keypair_suite, generate_signing_keypair_with_level, sign, verify,
 };
+pub use suite::{SEAL_CONTEXT_V1, Suite};

@@ -9,6 +9,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::hybrid::SecurityLevel;
+use crate::suite::Suite;
 use crate::{b64, box_seal, hash, hybrid, kdf, keys, recovery, seal, secretbox, sign};
 // ---------------------------------------------------------------------------
 // Key derivation
@@ -126,7 +127,6 @@ pub fn seal_for_user_with_level(
 // ---------------------------------------------------------------------------
 // Hybrid PQ KEM
 // ---------------------------------------------------------------------------
-
 /// Generate a ML-KEM-512 + X25519 keypair (Cat-1). Returns JSON: `{ publicKey, secretKey }`.
 #[wasm_bindgen(js_name = "generateHybridKeyPair512")]
 pub fn generate_hybrid_keypair_512() -> JsValue {
@@ -162,6 +162,96 @@ pub fn generate_hybrid_keypair_1024() -> JsValue {
 #[wasm_bindgen(js_name = "isHybridCiphertext")]
 pub fn is_hybrid_ciphertext(ciphertext_b64: &str) -> bool {
     hybrid::is_hybrid_ciphertext(ciphertext_b64)
+}
+
+// ---------------------------------------------------------------------------
+// CNSA 2.0 suites (v0.7.0): Suite × SecurityLevel KEM/seal
+// ---------------------------------------------------------------------------
+//
+// `suite` is `"hybrid"` (default/legacy), `"hybridMatched"`, or `"pureCnsa2"`
+// (case-insensitive; `_`/`-` separators tolerated). `level` is `"cat1"`,
+// `"cat3"`, or `"cat5"`. PureCnsa2 requires Cat-5. The new suites bind a
+// versioned context label (`"<namespace>/<purpose>/v<major>"`); the default is
+// `"metamorphic/seal/v1"`.
+
+/// Generate a keypair for `(suite, level)`. Returns JSON: `{ publicKey, secretKey }`.
+#[wasm_bindgen(js_name = "generateHybridKeyPairSuite")]
+pub fn generate_hybrid_keypair_suite(suite: &str, level: &str) -> Result<JsValue, JsValue> {
+    let suite = parse_suite(suite)?;
+    let lvl = parse_security_level(level)?;
+    let kp = hybrid::generate_hybrid_keypair_suite(suite, lvl).map_err(to_js)?;
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &kp.public_key.into()).unwrap();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &kp.secret_key.into()).unwrap();
+    Ok(obj.into())
+}
+
+/// Seal plaintext (base64) to a `(suite, level)` combined public key, binding
+/// the default `"metamorphic/seal/v1"` context label. Returns base64 ciphertext.
+#[wasm_bindgen(js_name = "hybridSealSuite")]
+pub fn hybrid_seal_suite(
+    plaintext_b64: &str,
+    combined_pk_b64: &str,
+    suite: &str,
+    level: &str,
+) -> Result<String, JsValue> {
+    let pt = b64::decode(plaintext_b64).map_err(to_js)?;
+    let suite = parse_suite(suite)?;
+    let lvl = parse_security_level(level)?;
+    hybrid::hybrid_seal_suite(&pt, combined_pk_b64, suite, lvl).map_err(to_js)
+}
+
+/// Seal plaintext (base64) to a `(suite, level)` combined public key, binding a
+/// custom `context_label`. Returns base64 ciphertext.
+#[wasm_bindgen(js_name = "hybridSealSuiteWithContext")]
+pub fn hybrid_seal_suite_with_context(
+    plaintext_b64: &str,
+    combined_pk_b64: &str,
+    suite: &str,
+    level: &str,
+    context_label: &str,
+) -> Result<String, JsValue> {
+    let pt = b64::decode(plaintext_b64).map_err(to_js)?;
+    let suite = parse_suite(suite)?;
+    let lvl = parse_security_level(level)?;
+    hybrid::hybrid_seal_suite_with_context(&pt, combined_pk_b64, suite, lvl, context_label)
+        .map_err(to_js)
+}
+
+/// Open a CNSA-2.0 (or legacy) hybrid ciphertext, supplying the context label
+/// used at seal time for the new suites. Returns base64-encoded plaintext.
+#[wasm_bindgen(js_name = "hybridOpenWithContext")]
+pub fn hybrid_open_with_context(
+    ciphertext_b64: &str,
+    seed_b64: &str,
+    context_label: &str,
+) -> Result<String, JsValue> {
+    let pt =
+        hybrid::hybrid_open_with_context(ciphertext_b64, seed_b64, context_label).map_err(to_js)?;
+    Ok(b64::encode(&pt))
+}
+
+/// Seal plaintext (base64) to a user's key(s) under a full `(suite, level)`.
+/// Falls back to legacy X25519 if `pq_public_key_b64` is absent/empty.
+#[wasm_bindgen(js_name = "sealForUserWithSuite")]
+pub fn seal_for_user_with_suite(
+    plaintext_b64: &str,
+    public_key_b64: &str,
+    pq_public_key_b64: Option<String>,
+    suite: &str,
+    level: &str,
+) -> Result<String, JsValue> {
+    let pt = b64::decode(plaintext_b64).map_err(to_js)?;
+    let suite = parse_suite(suite)?;
+    let lvl = parse_security_level(level)?;
+    seal::seal_for_user_with_suite(
+        &pt,
+        public_key_b64,
+        pq_public_key_b64.as_deref(),
+        suite,
+        lvl,
+    )
+    .map_err(to_js)
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +430,24 @@ pub fn generate_signing_keypair(level: &str) -> Result<JsValue, JsValue> {
     Ok(obj.into())
 }
 
+/// Generate a signing keypair for a full CNSA-2.0 `(suite, level)`.
+///
+/// `suite` is `"hybrid"` (default), `"hybridMatched"` (Cat-3→Ed448,
+/// Cat-5→ECDSA-P-521), or `"pureCnsa2"` (ML-DSA-87 only, Cat-5). `level` is
+/// `"cat2"`/`"cat3"`/`"cat5"`. `sign` / `verify` / `deriveSigningPublicKey`
+/// auto-detect the suite from the key/signature version tag, so no suite
+/// argument is needed there. Returns JSON: `{ publicKey, secretKey }`.
+#[wasm_bindgen(js_name = "generateSigningKeyPairSuite")]
+pub fn generate_signing_keypair_suite(suite: &str, level: &str) -> Result<JsValue, JsValue> {
+    let suite = parse_suite(suite)?;
+    let lvl = parse_signature_level(level)?;
+    let kp = sign::generate_signing_keypair_suite(suite, lvl).map_err(to_js)?;
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &kp.public_key.clone().into()).unwrap();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &kp.secret_key.clone().into()).unwrap();
+    Ok(obj.into())
+}
+
 /// Re-derive the base64 public key from a base64 hybrid secret key.
 #[wasm_bindgen(js_name = "deriveSigningPublicKey")]
 pub fn derive_signing_public_key(secret_key_b64: &str) -> Result<String, JsValue> {
@@ -393,6 +501,27 @@ fn parse_security_level(level: &str) -> Result<SecurityLevel, JsValue> {
 /// Convert a CryptoError into a JsValue (thrown as a JS Error).
 fn to_js(e: crate::CryptoError) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+
+/// Parse a JS string into a [`Suite`].
+///
+/// Accepts `"hybrid"` (default), `"hybridMatched"` / `"matched"`, and
+/// `"pureCnsa2"` / `"pure"` (case-insensitive; `_`/`-`/space separators
+/// tolerated). Empty/null defaults to `Hybrid`.
+fn parse_suite(suite: &str) -> Result<Suite, JsValue> {
+    let normalized: String = suite
+        .chars()
+        .filter(|c| *c != '_' && *c != '-' && *c != ' ')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "hybrid" => Ok(Suite::Hybrid),
+        "hybridmatched" | "matched" => Ok(Suite::HybridMatched),
+        "purecnsa2" | "pure" | "cnsa2" => Ok(Suite::PureCnsa2),
+        other => Err(JsValue::from_str(&format!(
+            "invalid suite \"{other}\": expected \"hybrid\", \"hybridMatched\", or \"pureCnsa2\""
+        ))),
+    }
 }
 
 /// Parse a JS string into a `SignatureLevel`.
