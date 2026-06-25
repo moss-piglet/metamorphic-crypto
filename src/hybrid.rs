@@ -95,6 +95,11 @@ use crypto_secretbox::{KeyInit, XSalsa20Poly1305};
 
 use crate::CryptoError;
 use crate::b64;
+use crate::ecc;
+use crate::suite::{
+    self, GCM_NONCE_LEN, GCM_TAG_LEN, SEAL_CONTEXT_V1, Suite, TAG_KEM_MATCHED_CAT3,
+    TAG_KEM_MATCHED_CAT5, TAG_KEM_PURE_CNSA2,
+};
 
 // === Constants ===
 
@@ -168,6 +173,38 @@ const COMBINED_CT_1024_LEN: usize = MLKEM1024_CT_LEN + X25519_LEN;
 /// Minimum sealed-box length for a Cat-5 hybrid ciphertext (empty plaintext).
 /// Shared by [`is_hybrid_ciphertext`] and [`hybrid_open_1024`].
 const MIN_HYBRID_1024_LEN: usize = 1 + COMBINED_CT_1024_LEN + NONCE_LEN + MAC_LEN;
+
+// === CNSA 2.0 suites (v0.7.0): AES-256-GCM envelope layouts ===
+//
+// These layouts are produced only by the new `Suite::PureCnsa2` /
+// `Suite::HybridMatched` paths. Layout: `tag(1) || mlkem_ct || [ecc_eph_pk] ||
+// nonce(12) || aes_gcm_ct || gcm_tag(16)`. The `aes_gcm_ct || gcm_tag` portion
+// is the combined AEAD output, so an empty-plaintext minimum is
+// `header || nonce(12) || tag(16)`.
+
+/// Minimum sealed-box length for a PureCnsa2 (`0x10`) ciphertext:
+/// `tag(1) || ML-KEM-1024 ct (1568) || nonce(12) || gcm_tag(16)`.
+const MIN_PURE_CNSA2_LEN: usize = 1 + MLKEM1024_CT_LEN + GCM_NONCE_LEN + GCM_TAG_LEN;
+/// Minimum sealed-box length for a HybridMatched Cat-3 (`0x13`) ciphertext:
+/// `tag(1) || ML-KEM-768 ct (1088) || X448 eph pk (56) || nonce(12) || gcm_tag(16)`.
+const MIN_MATCHED_CAT3_LEN: usize =
+    1 + MLKEM768_CT_LEN + ecc::X448_LEN + GCM_NONCE_LEN + GCM_TAG_LEN;
+/// Minimum sealed-box length for a HybridMatched Cat-5 (`0x14`) ciphertext:
+/// `tag(1) || ML-KEM-1024 ct (1568) || P-521 eph pk (133) || nonce(12) || gcm_tag(16)`.
+const MIN_MATCHED_CAT5_LEN: usize =
+    1 + MLKEM1024_CT_LEN + ecc::P521_PK_LEN + GCM_NONCE_LEN + GCM_TAG_LEN;
+
+/// PureCnsa2 combined public key length (ML-KEM-1024 ek only).
+const PURE_CNSA2_PK_LEN: usize = MLKEM1024_EK_LEN;
+/// HybridMatched Cat-3 combined public key length (ML-KEM-768 ek + X448 pk).
+const MATCHED_CAT3_PK_LEN: usize = MLKEM768_EK_LEN + ecc::X448_LEN;
+/// HybridMatched Cat-5 combined public key length (ML-KEM-1024 ek + P-521 pk).
+const MATCHED_CAT5_PK_LEN: usize = MLKEM1024_EK_LEN + ecc::P521_PK_LEN;
+
+/// Expanded-seed length for HybridMatched Cat-3 (ML-KEM-768 seed + X448 secret).
+const EXPANDED_SEED_MATCHED_CAT3_LEN: usize = MLKEM768_SEED_LEN + ecc::X448_LEN;
+/// Expanded-seed length for HybridMatched Cat-5 (ML-KEM-1024 seed + P-521 secret).
+const EXPANDED_SEED_MATCHED_CAT5_LEN: usize = MLKEM1024_SEED_LEN + ecc::P521_SK_LEN;
 
 // === Types ===
 
@@ -283,13 +320,37 @@ pub fn hybrid_seal(plaintext: &[u8], combined_pk_b64: &str) -> Result<String, Cr
     hybrid_seal_with_level(plaintext, combined_pk_b64, SecurityLevel::Cat3)
 }
 
-/// Open a Cat-1, Cat-3, or Cat-5 hybrid-sealed ciphertext. Auto-detects from version tag.
+/// Open a hybrid-sealed ciphertext. Auto-detects the suite + level from the
+/// version tag.
+///
+/// - `0x01/0x02/0x03` → legacy `Suite::Hybrid` (ML-KEM + X25519, combineKEMS).
+/// - `0x10` → `Suite::PureCnsa2` Cat-5 (ML-KEM-1024 + AES-256-GCM).
+/// - `0x13` → `Suite::HybridMatched` Cat-3 (ML-KEM-768 + X448 + AES-256-GCM).
+/// - `0x14` → `Suite::HybridMatched` Cat-5 (ML-KEM-1024 + P-521 + AES-256-GCM).
+///
+/// The new (`0x10/0x13/0x14`) suites bind the **default** context label
+/// [`SEAL_CONTEXT_V1`]; use [`hybrid_open_with_context`] to supply a custom
+/// per-tenant label.
 pub fn hybrid_open(ct_b64: &str, seed_b64: &str) -> Result<Vec<u8>, CryptoError> {
+    hybrid_open_with_context(ct_b64, seed_b64, SEAL_CONTEXT_V1)
+}
+
+/// Open a hybrid-sealed ciphertext, supplying the context label used at seal
+/// time for the new CNSA-2.0 suites. The label is ignored for the legacy
+/// `0x01/0x02/0x03` tags (which never bind a context).
+pub fn hybrid_open_with_context(
+    ct_b64: &str,
+    seed_b64: &str,
+    context_label: &str,
+) -> Result<Vec<u8>, CryptoError> {
     let combined = b64::decode(ct_b64)?;
     match combined.first() {
         Some(&VERSION_HYBRID_512) => hybrid_open_512(&combined, seed_b64),
         Some(&VERSION_HYBRID_768) => hybrid_open_768(&combined, seed_b64),
         Some(&VERSION_HYBRID_1024) => hybrid_open_1024(&combined, seed_b64),
+        Some(&TAG_KEM_PURE_CNSA2) => open_pure_cnsa2(&combined, seed_b64, context_label),
+        Some(&TAG_KEM_MATCHED_CAT3) => open_matched_cat3(&combined, seed_b64, context_label),
+        Some(&TAG_KEM_MATCHED_CAT5) => open_matched_cat5(&combined, seed_b64, context_label),
         _ => Err(CryptoError::Hybrid(
             "not a hybrid ciphertext (bad version tag)".into(),
         )),
@@ -316,6 +377,9 @@ pub fn is_hybrid_ciphertext(ct_b64: &str) -> bool {
         Some(&VERSION_HYBRID_512) => bytes.len() >= MIN_HYBRID_512_LEN,
         Some(&VERSION_HYBRID_768) => bytes.len() >= MIN_HYBRID_768_LEN,
         Some(&VERSION_HYBRID_1024) => bytes.len() >= MIN_HYBRID_1024_LEN,
+        Some(&TAG_KEM_PURE_CNSA2) => bytes.len() >= MIN_PURE_CNSA2_LEN,
+        Some(&TAG_KEM_MATCHED_CAT3) => bytes.len() >= MIN_MATCHED_CAT3_LEN,
+        Some(&TAG_KEM_MATCHED_CAT5) => bytes.len() >= MIN_MATCHED_CAT5_LEN,
         _ => false,
     }
 }
@@ -670,6 +734,438 @@ fn hybrid_open_1024(combined: &[u8], seed_b64: &str) -> Result<Vec<u8>, CryptoEr
     result
 }
 
+// === CNSA 2.0 suites: ML-KEM helpers ===
+
+/// ML-KEM-768 encapsulate against `ek_bytes`. Returns `(ct, ss(32))`.
+fn mlkem768_encapsulate(ek_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
+    let ek = EncapsulationKey::<MlKem768>::new(
+        ek_bytes
+            .try_into()
+            .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-768 ek".into()))?,
+    )
+    .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-768 encapsulation key".into()))?;
+    let mut coins = [0u8; 32];
+    random_bytes(&mut coins);
+    let (ct, ss) = ek.encapsulate_deterministic(&coins.into());
+    coins.zeroize();
+    let ss32: [u8; 32] = ss
+        .as_slice()
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("unexpected ML-KEM shared-secret length".into()))?;
+    Ok((ct.as_slice().to_vec(), ss32))
+}
+
+/// ML-KEM-1024 encapsulate against `ek_bytes`. Returns `(ct, ss(32))`.
+fn mlkem1024_encapsulate(ek_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
+    let ek = EncapsulationKey::<MlKem1024>::new(
+        ek_bytes
+            .try_into()
+            .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-1024 ek".into()))?,
+    )
+    .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-1024 encapsulation key".into()))?;
+    let mut coins = [0u8; 32];
+    random_bytes(&mut coins);
+    let (ct, ss) = ek.encapsulate_deterministic(&coins.into());
+    coins.zeroize();
+    let ss32: [u8; 32] = ss
+        .as_slice()
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("unexpected ML-KEM shared-secret length".into()))?;
+    Ok((ct.as_slice().to_vec(), ss32))
+}
+
+/// ML-KEM-768 decapsulate `ct` with a 64-byte seed. Returns `ss(32)`.
+fn mlkem768_decapsulate(
+    seed64: &[u8; MLKEM768_SEED_LEN],
+    ct: &[u8],
+) -> Result<[u8; 32], CryptoError> {
+    let dk = DecapsulationKey::<MlKem768>::from_seed((*seed64).into());
+    let kem_ct = ct
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-768 ciphertext".into()))?;
+    let ss = dk.decapsulate(kem_ct);
+    ss.as_slice()
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("unexpected ML-KEM shared-secret length".into()))
+}
+
+/// ML-KEM-1024 decapsulate `ct` with a 64-byte seed. Returns `ss(32)`.
+fn mlkem1024_decapsulate(
+    seed64: &[u8; MLKEM1024_SEED_LEN],
+    ct: &[u8],
+) -> Result<[u8; 32], CryptoError> {
+    let dk = DecapsulationKey::<MlKem1024>::from_seed((*seed64).into());
+    let kem_ct = ct
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("invalid ML-KEM-1024 ciphertext".into()))?;
+    let ss = dk.decapsulate(kem_ct);
+    ss.as_slice()
+        .try_into()
+        .map_err(|_| CryptoError::Hybrid("unexpected ML-KEM shared-secret length".into()))
+}
+
+/// Derive the ML-KEM-1024 encapsulation key bytes (1568 B) from a 64-byte seed.
+fn mlkem1024_ek_from_seed(seed64: &[u8; MLKEM1024_SEED_LEN]) -> Vec<u8> {
+    let dk = DecapsulationKey::<MlKem1024>::from_seed((*seed64).into());
+    dk.encapsulation_key().to_bytes().as_slice().to_vec()
+}
+
+/// Derive the ML-KEM-768 encapsulation key bytes (1184 B) from a 64-byte seed.
+fn mlkem768_ek_from_seed(seed64: &[u8; MLKEM768_SEED_LEN]) -> Vec<u8> {
+    let dk = DecapsulationKey::<MlKem768>::from_seed((*seed64).into());
+    dk.encapsulation_key().to_bytes().as_slice().to_vec()
+}
+
+// === CNSA 2.0 suites: keygen ===
+
+/// Generate a keypair for the given [`Suite`] + [`SecurityLevel`].
+///
+/// - `Suite::Hybrid` (any level) and `Suite::HybridMatched` at Cat-1 delegate to
+///   the existing [`generate_hybrid_keypair_with_level`] (identical bytes).
+/// - `Suite::HybridMatched` at Cat-3/Cat-5 and `Suite::PureCnsa2` at Cat-5
+///   produce the new combined-key layouts (ML-KEM ek `||` matched ECC pk, or
+///   ML-KEM-1024 ek alone). The `secret_key` stays a single 32-byte root seed.
+///
+/// Returns an error for unsupported combinations (PureCnsa2 below Cat-5).
+pub fn generate_hybrid_keypair_suite(
+    suite: Suite,
+    level: SecurityLevel,
+) -> Result<HybridKeyPair, CryptoError> {
+    match (suite, level) {
+        (Suite::Hybrid, _) | (Suite::HybridMatched, SecurityLevel::Cat1) => {
+            Ok(generate_hybrid_keypair_with_level(level))
+        }
+        (Suite::HybridMatched, SecurityLevel::Cat3) => Ok(generate_matched_cat3_keypair()),
+        (Suite::HybridMatched, SecurityLevel::Cat5) => Ok(generate_matched_cat5_keypair()),
+        (Suite::PureCnsa2, SecurityLevel::Cat5) => Ok(generate_pure_cnsa2_keypair()),
+        (Suite::PureCnsa2, _) => Err(CryptoError::Hybrid(
+            "PureCnsa2 is Cat-5 only in v0.7.0".into(),
+        )),
+    }
+}
+
+fn generate_pure_cnsa2_keypair() -> HybridKeyPair {
+    let mut seed = [0u8; SEED_LEN];
+    random_bytes(&mut seed);
+    let mut expanded = expand_seed(&seed, MLKEM1024_SEED_LEN);
+    let mlkem_seed: [u8; MLKEM1024_SEED_LEN] = expanded[..].try_into().unwrap();
+    let pk = mlkem1024_ek_from_seed(&mlkem_seed);
+    let pair = HybridKeyPair {
+        public_key: b64::encode(&pk),
+        secret_key: b64::encode(&seed),
+    };
+    seed.zeroize();
+    expanded.zeroize();
+    pair
+}
+
+fn generate_matched_cat3_keypair() -> HybridKeyPair {
+    let mut seed = [0u8; SEED_LEN];
+    random_bytes(&mut seed);
+    let mut expanded = expand_seed(&seed, EXPANDED_SEED_MATCHED_CAT3_LEN);
+    let mlkem_seed: [u8; MLKEM768_SEED_LEN] = expanded[..MLKEM768_SEED_LEN].try_into().unwrap();
+    let x448_secret: [u8; ecc::X448_LEN] = expanded[MLKEM768_SEED_LEN..].try_into().unwrap();
+    let mut pk = mlkem768_ek_from_seed(&mlkem_seed);
+    pk.extend_from_slice(&ecc::x448_public_from_secret(&x448_secret));
+    let pair = HybridKeyPair {
+        public_key: b64::encode(&pk),
+        secret_key: b64::encode(&seed),
+    };
+    seed.zeroize();
+    expanded.zeroize();
+    pair
+}
+
+fn generate_matched_cat5_keypair() -> HybridKeyPair {
+    let mut seed = [0u8; SEED_LEN];
+    random_bytes(&mut seed);
+    let mut expanded = expand_seed(&seed, EXPANDED_SEED_MATCHED_CAT5_LEN);
+    let mlkem_seed: [u8; MLKEM1024_SEED_LEN] = expanded[..MLKEM1024_SEED_LEN].try_into().unwrap();
+    let p521_secret: [u8; ecc::P521_SK_LEN] = expanded[MLKEM1024_SEED_LEN..].try_into().unwrap();
+    let mut pk = mlkem1024_ek_from_seed(&mlkem_seed);
+    pk.extend_from_slice(
+        &ecc::p521_public_from_secret(&p521_secret)
+            .expect("deterministic P-521 public-key derivation"),
+    );
+    let pair = HybridKeyPair {
+        public_key: b64::encode(&pk),
+        secret_key: b64::encode(&seed),
+    };
+    seed.zeroize();
+    expanded.zeroize();
+    pair
+}
+
+// === CNSA 2.0 suites: seal ===
+
+/// Seal `plaintext` to a recipient public key under the given [`Suite`] +
+/// [`SecurityLevel`], binding the **default** context label [`SEAL_CONTEXT_V1`].
+///
+/// See [`hybrid_seal_suite_with_context`] for a custom per-tenant label.
+pub fn hybrid_seal_suite(
+    plaintext: &[u8],
+    combined_pk_b64: &str,
+    suite: Suite,
+    level: SecurityLevel,
+) -> Result<String, CryptoError> {
+    hybrid_seal_suite_with_context(plaintext, combined_pk_b64, suite, level, SEAL_CONTEXT_V1)
+}
+
+/// Seal `plaintext` under the given [`Suite`] + [`SecurityLevel`] + context label.
+///
+/// `Suite::Hybrid` (and `HybridMatched` at Cat-1) delegate to the legacy
+/// combineKEMS path and ignore `context_label` (that format binds no context).
+/// The new suites build the HKDF-SHA512 + AES-256-GCM envelope described in
+/// [`crate::suite`], binding `context_label` into both the HKDF `info` and the
+/// GCM AAD.
+pub fn hybrid_seal_suite_with_context(
+    plaintext: &[u8],
+    combined_pk_b64: &str,
+    suite: Suite,
+    level: SecurityLevel,
+    context_label: &str,
+) -> Result<String, CryptoError> {
+    match (suite, level) {
+        (Suite::Hybrid, _) => hybrid_seal_with_level(plaintext, combined_pk_b64, level),
+        (Suite::HybridMatched, SecurityLevel::Cat1) => {
+            hybrid_seal_with_level(plaintext, combined_pk_b64, SecurityLevel::Cat1)
+        }
+        (Suite::HybridMatched, SecurityLevel::Cat3) => {
+            seal_matched_cat3(plaintext, combined_pk_b64, context_label)
+        }
+        (Suite::HybridMatched, SecurityLevel::Cat5) => {
+            seal_matched_cat5(plaintext, combined_pk_b64, context_label)
+        }
+        (Suite::PureCnsa2, SecurityLevel::Cat5) => {
+            seal_pure_cnsa2(plaintext, combined_pk_b64, context_label)
+        }
+        (Suite::PureCnsa2, _) => Err(CryptoError::Hybrid(
+            "PureCnsa2 is Cat-5 only in v0.7.0".into(),
+        )),
+    }
+}
+
+fn check_pk_len(pk: &[u8], expected: usize) -> Result<(), CryptoError> {
+    if pk.len() != expected {
+        return Err(CryptoError::InvalidLength {
+            expected,
+            got: pk.len(),
+        });
+    }
+    Ok(())
+}
+
+fn assemble_envelope(
+    tag: u8,
+    kem_ct: &[u8],
+    ecc_eph_pk: Option<&[u8]>,
+    nonce: &[u8; GCM_NONCE_LEN],
+    aead_ct: &[u8],
+) -> String {
+    let ecc_len = ecc_eph_pk.map_or(0, |p| p.len());
+    let mut out = Vec::with_capacity(1 + kem_ct.len() + ecc_len + GCM_NONCE_LEN + aead_ct.len());
+    out.push(tag);
+    out.extend_from_slice(kem_ct);
+    if let Some(p) = ecc_eph_pk {
+        out.extend_from_slice(p);
+    }
+    out.extend_from_slice(nonce);
+    out.extend_from_slice(aead_ct);
+    b64::encode(&out)
+}
+
+fn random_nonce() -> [u8; GCM_NONCE_LEN] {
+    let mut nonce = [0u8; GCM_NONCE_LEN];
+    random_bytes(&mut nonce);
+    nonce
+}
+
+fn seal_pure_cnsa2(
+    plaintext: &[u8],
+    combined_pk_b64: &str,
+    context_label: &str,
+) -> Result<String, CryptoError> {
+    let pk = b64::decode(combined_pk_b64)?;
+    check_pk_len(&pk, PURE_CNSA2_PK_LEN)?;
+    let (kem_ct, ss_mlkem) = mlkem1024_encapsulate(&pk)?;
+    let nonce = random_nonce();
+    let aead_ct = suite::envelope_seal(
+        &ss_mlkem,
+        TAG_KEM_PURE_CNSA2,
+        context_label,
+        &nonce,
+        plaintext,
+    )?;
+    Ok(assemble_envelope(
+        TAG_KEM_PURE_CNSA2,
+        &kem_ct,
+        None,
+        &nonce,
+        &aead_ct,
+    ))
+}
+
+fn seal_matched_cat3(
+    plaintext: &[u8],
+    combined_pk_b64: &str,
+    context_label: &str,
+) -> Result<String, CryptoError> {
+    let pk = b64::decode(combined_pk_b64)?;
+    check_pk_len(&pk, MATCHED_CAT3_PK_LEN)?;
+    let (mlkem_ek, x448_pk) = pk.split_at(MLKEM768_EK_LEN);
+    let (kem_ct, ss_mlkem) = mlkem768_encapsulate(mlkem_ek)?;
+    let (x448_eph_pk, ss_x448) = ecc::x448_encapsulate(x448_pk)?;
+    let mut ikm = Vec::with_capacity(32 + ecc::X448_LEN);
+    ikm.extend_from_slice(&ss_mlkem);
+    ikm.extend_from_slice(&ss_x448);
+    let nonce = random_nonce();
+    let aead_ct =
+        suite::envelope_seal(&ikm, TAG_KEM_MATCHED_CAT3, context_label, &nonce, plaintext)?;
+    ikm.zeroize();
+    Ok(assemble_envelope(
+        TAG_KEM_MATCHED_CAT3,
+        &kem_ct,
+        Some(&x448_eph_pk),
+        &nonce,
+        &aead_ct,
+    ))
+}
+
+fn seal_matched_cat5(
+    plaintext: &[u8],
+    combined_pk_b64: &str,
+    context_label: &str,
+) -> Result<String, CryptoError> {
+    let pk = b64::decode(combined_pk_b64)?;
+    check_pk_len(&pk, MATCHED_CAT5_PK_LEN)?;
+    let (mlkem_ek, p521_pk) = pk.split_at(MLKEM1024_EK_LEN);
+    let (kem_ct, ss_mlkem) = mlkem1024_encapsulate(mlkem_ek)?;
+    let (p521_eph_pk, ss_p521) = ecc::p521_encapsulate(p521_pk)?;
+    let mut ikm = Vec::with_capacity(32 + ecc::P521_SS_LEN);
+    ikm.extend_from_slice(&ss_mlkem);
+    ikm.extend_from_slice(&ss_p521);
+    let nonce = random_nonce();
+    let aead_ct =
+        suite::envelope_seal(&ikm, TAG_KEM_MATCHED_CAT5, context_label, &nonce, plaintext)?;
+    ikm.zeroize();
+    Ok(assemble_envelope(
+        TAG_KEM_MATCHED_CAT5,
+        &kem_ct,
+        Some(&p521_eph_pk),
+        &nonce,
+        &aead_ct,
+    ))
+}
+
+// === CNSA 2.0 suites: open ===
+
+fn load_seed(seed_b64: &str) -> Result<[u8; SEED_LEN], CryptoError> {
+    let seed_bytes = b64::decode(seed_b64)?;
+    if seed_bytes.len() != SEED_LEN {
+        return Err(CryptoError::InvalidLength {
+            expected: SEED_LEN,
+            got: seed_bytes.len(),
+        });
+    }
+    Ok(seed_bytes.try_into().unwrap())
+}
+
+fn open_pure_cnsa2(
+    combined: &[u8],
+    seed_b64: &str,
+    context_label: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    if combined.len() < MIN_PURE_CNSA2_LEN {
+        return Err(CryptoError::TooShort);
+    }
+    let seed = load_seed(seed_b64)?;
+    let mut expanded = expand_seed(&seed, MLKEM1024_SEED_LEN);
+    let mlkem_seed: [u8; MLKEM1024_SEED_LEN] = expanded[..].try_into().unwrap();
+
+    let kem_ct = &combined[1..1 + MLKEM1024_CT_LEN];
+    let nonce: [u8; GCM_NONCE_LEN] = combined
+        [1 + MLKEM1024_CT_LEN..1 + MLKEM1024_CT_LEN + GCM_NONCE_LEN]
+        .try_into()
+        .unwrap();
+    let aead_ct = &combined[1 + MLKEM1024_CT_LEN + GCM_NONCE_LEN..];
+
+    let ss_mlkem = mlkem1024_decapsulate(&mlkem_seed, kem_ct)?;
+    expanded.zeroize();
+    suite::envelope_open(
+        &ss_mlkem,
+        TAG_KEM_PURE_CNSA2,
+        context_label,
+        &nonce,
+        aead_ct,
+    )
+}
+
+fn open_matched_cat3(
+    combined: &[u8],
+    seed_b64: &str,
+    context_label: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    if combined.len() < MIN_MATCHED_CAT3_LEN {
+        return Err(CryptoError::TooShort);
+    }
+    let seed = load_seed(seed_b64)?;
+    let mut expanded = expand_seed(&seed, EXPANDED_SEED_MATCHED_CAT3_LEN);
+    let mlkem_seed: [u8; MLKEM768_SEED_LEN] = expanded[..MLKEM768_SEED_LEN].try_into().unwrap();
+    let x448_secret: [u8; ecc::X448_LEN] = expanded[MLKEM768_SEED_LEN..].try_into().unwrap();
+
+    let kem_ct = &combined[1..1 + MLKEM768_CT_LEN];
+    let ecc_start = 1 + MLKEM768_CT_LEN;
+    let x448_eph_pk = &combined[ecc_start..ecc_start + ecc::X448_LEN];
+    let nonce_start = ecc_start + ecc::X448_LEN;
+    let nonce: [u8; GCM_NONCE_LEN] = combined[nonce_start..nonce_start + GCM_NONCE_LEN]
+        .try_into()
+        .unwrap();
+    let aead_ct = &combined[nonce_start + GCM_NONCE_LEN..];
+
+    let ss_mlkem = mlkem768_decapsulate(&mlkem_seed, kem_ct)?;
+    let ss_x448 = ecc::x448_decapsulate(&x448_secret, x448_eph_pk)?;
+    expanded.zeroize();
+    let mut ikm = Vec::with_capacity(32 + ecc::X448_LEN);
+    ikm.extend_from_slice(&ss_mlkem);
+    ikm.extend_from_slice(&ss_x448);
+    let out = suite::envelope_open(&ikm, TAG_KEM_MATCHED_CAT3, context_label, &nonce, aead_ct);
+    ikm.zeroize();
+    out
+}
+
+fn open_matched_cat5(
+    combined: &[u8],
+    seed_b64: &str,
+    context_label: &str,
+) -> Result<Vec<u8>, CryptoError> {
+    if combined.len() < MIN_MATCHED_CAT5_LEN {
+        return Err(CryptoError::TooShort);
+    }
+    let seed = load_seed(seed_b64)?;
+    let mut expanded = expand_seed(&seed, EXPANDED_SEED_MATCHED_CAT5_LEN);
+    let mlkem_seed: [u8; MLKEM1024_SEED_LEN] = expanded[..MLKEM1024_SEED_LEN].try_into().unwrap();
+    let p521_secret: [u8; ecc::P521_SK_LEN] = expanded[MLKEM1024_SEED_LEN..].try_into().unwrap();
+
+    let kem_ct = &combined[1..1 + MLKEM1024_CT_LEN];
+    let ecc_start = 1 + MLKEM1024_CT_LEN;
+    let p521_eph_pk = &combined[ecc_start..ecc_start + ecc::P521_PK_LEN];
+    let nonce_start = ecc_start + ecc::P521_PK_LEN;
+    let nonce: [u8; GCM_NONCE_LEN] = combined[nonce_start..nonce_start + GCM_NONCE_LEN]
+        .try_into()
+        .unwrap();
+    let aead_ct = &combined[nonce_start + GCM_NONCE_LEN..];
+
+    let ss_mlkem = mlkem1024_decapsulate(&mlkem_seed, kem_ct)?;
+    let ss_p521 = ecc::p521_decapsulate(&p521_secret, p521_eph_pk)?;
+    expanded.zeroize();
+    let mut ikm = Vec::with_capacity(32 + ecc::P521_SS_LEN);
+    ikm.extend_from_slice(&ss_mlkem);
+    ikm.extend_from_slice(&ss_p521);
+    let out = suite::envelope_open(&ikm, TAG_KEM_MATCHED_CAT5, context_label, &nonce, aead_ct);
+    ikm.zeroize();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +1452,208 @@ mod tests {
         let ss_mlkem2 = [0xEEu8; 32];
         let result2 = combine(&ss_mlkem2, &ss_x25519, &ct_x25519, &pk_x25519);
         assert_ne!(result, result2);
+    }
+
+    // === CNSA 2.0 suites (v0.7.0) ===
+
+    #[test]
+    fn pure_cnsa2_roundtrip() {
+        let kp = generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+        let pt = b"32-byte symmetric context key!!!";
+        let ct =
+            hybrid_seal_suite(pt, &kp.public_key, Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+        assert!(is_hybrid_ciphertext(&ct));
+        assert_eq!(b64::decode(&ct).unwrap()[0], TAG_KEM_PURE_CNSA2);
+        assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), pt);
+    }
+
+    #[test]
+    fn pure_cnsa2_pk_len_and_no_classical_half() {
+        let kp = generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+        assert_eq!(
+            b64::decode(&kp.public_key).unwrap().len(),
+            PURE_CNSA2_PK_LEN
+        );
+        assert_eq!(b64::decode(&kp.secret_key).unwrap().len(), SEED_LEN);
+    }
+
+    #[test]
+    fn pure_cnsa2_only_cat5() {
+        assert!(generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat3).is_err());
+        assert!(generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat1).is_err());
+    }
+
+    #[test]
+    fn matched_cat3_roundtrip() {
+        let kp = generate_hybrid_keypair_suite(Suite::HybridMatched, SecurityLevel::Cat3).unwrap();
+        assert_eq!(
+            b64::decode(&kp.public_key).unwrap().len(),
+            MATCHED_CAT3_PK_LEN
+        );
+        let pt = b"matched cat-3 (ML-KEM-768 + X448)";
+        let ct = hybrid_seal_suite(
+            pt,
+            &kp.public_key,
+            Suite::HybridMatched,
+            SecurityLevel::Cat3,
+        )
+        .unwrap();
+        assert!(is_hybrid_ciphertext(&ct));
+        assert_eq!(b64::decode(&ct).unwrap()[0], TAG_KEM_MATCHED_CAT3);
+        assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), pt);
+    }
+
+    #[test]
+    fn matched_cat5_roundtrip() {
+        let kp = generate_hybrid_keypair_suite(Suite::HybridMatched, SecurityLevel::Cat5).unwrap();
+        assert_eq!(
+            b64::decode(&kp.public_key).unwrap().len(),
+            MATCHED_CAT5_PK_LEN
+        );
+        let pt = b"matched cat-5 (ML-KEM-1024 + P-521)";
+        let ct = hybrid_seal_suite(
+            pt,
+            &kp.public_key,
+            Suite::HybridMatched,
+            SecurityLevel::Cat5,
+        )
+        .unwrap();
+        assert!(is_hybrid_ciphertext(&ct));
+        assert_eq!(b64::decode(&ct).unwrap()[0], TAG_KEM_MATCHED_CAT5);
+        assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), pt);
+    }
+
+    #[test]
+    fn matched_cat1_is_plain_hybrid() {
+        // HybridMatched at Cat-1 must be byte-format-identical to Hybrid Cat-1
+        // (X25519, tag 0x01) — no new format at the lowest rung.
+        let kp = generate_hybrid_keypair_suite(Suite::HybridMatched, SecurityLevel::Cat1).unwrap();
+        let ct = hybrid_seal_suite(
+            b"x",
+            &kp.public_key,
+            Suite::HybridMatched,
+            SecurityLevel::Cat1,
+        )
+        .unwrap();
+        assert_eq!(b64::decode(&ct).unwrap()[0], VERSION_HYBRID_512);
+        assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), b"x");
+    }
+
+    #[test]
+    fn hybrid_suite_is_unchanged_legacy_format() {
+        // Suite::Hybrid must keep emitting the legacy tags/bytes at every level.
+        for (level, tag) in [
+            (SecurityLevel::Cat1, VERSION_HYBRID_512),
+            (SecurityLevel::Cat3, VERSION_HYBRID_768),
+            (SecurityLevel::Cat5, VERSION_HYBRID_1024),
+        ] {
+            let kp = generate_hybrid_keypair_suite(Suite::Hybrid, level).unwrap();
+            let ct = hybrid_seal_suite(b"x", &kp.public_key, Suite::Hybrid, level).unwrap();
+            assert_eq!(b64::decode(&ct).unwrap()[0], tag);
+            assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), b"x");
+        }
+    }
+
+    #[test]
+    fn new_suites_empty_plaintext() {
+        for (suite, level) in [
+            (Suite::PureCnsa2, SecurityLevel::Cat5),
+            (Suite::HybridMatched, SecurityLevel::Cat3),
+            (Suite::HybridMatched, SecurityLevel::Cat5),
+        ] {
+            let kp = generate_hybrid_keypair_suite(suite, level).unwrap();
+            let ct = hybrid_seal_suite(b"", &kp.public_key, suite, level).unwrap();
+            assert_eq!(hybrid_open(&ct, &kp.secret_key).unwrap(), b"");
+        }
+    }
+
+    #[test]
+    fn new_suites_nondeterministic_and_wrong_key_fails() {
+        for (suite, level) in [
+            (Suite::PureCnsa2, SecurityLevel::Cat5),
+            (Suite::HybridMatched, SecurityLevel::Cat3),
+            (Suite::HybridMatched, SecurityLevel::Cat5),
+        ] {
+            let kp = generate_hybrid_keypair_suite(suite, level).unwrap();
+            let kp2 = generate_hybrid_keypair_suite(suite, level).unwrap();
+            let c1 = hybrid_seal_suite(b"x", &kp.public_key, suite, level).unwrap();
+            let c2 = hybrid_seal_suite(b"x", &kp.public_key, suite, level).unwrap();
+            assert_ne!(c1, c2, "fresh nonce + KEM => non-deterministic");
+            assert!(
+                hybrid_open(&c1, &kp2.secret_key).is_err(),
+                "wrong key fails"
+            );
+        }
+    }
+
+    #[test]
+    fn context_label_is_bound() {
+        let kp = generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+        let ct = hybrid_seal_suite_with_context(
+            b"secret",
+            &kp.public_key,
+            Suite::PureCnsa2,
+            SecurityLevel::Cat5,
+            "mosslet/seal/v1",
+        )
+        .unwrap();
+        // Opening with the wrong context label fails (AAD + HKDF info mismatch).
+        assert!(hybrid_open_with_context(&ct, &kp.secret_key, "metamorphic/seal/v1").is_err());
+        // Opening with the correct label succeeds.
+        assert_eq!(
+            hybrid_open_with_context(&ct, &kp.secret_key, "mosslet/seal/v1").unwrap(),
+            b"secret"
+        );
+    }
+
+    #[test]
+    fn new_suite_tampered_ciphertext_fails() {
+        let kp = generate_hybrid_keypair_suite(Suite::HybridMatched, SecurityLevel::Cat5).unwrap();
+        let ct = hybrid_seal_suite(
+            b"data",
+            &kp.public_key,
+            Suite::HybridMatched,
+            SecurityLevel::Cat5,
+        )
+        .unwrap();
+        let mut raw = b64::decode(&ct).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF; // corrupt the GCM tag
+        assert!(hybrid_open(&b64::encode(&raw), &kp.secret_key).is_err());
+    }
+
+    /// ML-KEM-1024 deterministic known-answer test (fixed seed + fixed coins).
+    /// The `ml-kem` crate is validated against the NIST FIPS-203 KATs, so these
+    /// pinned digests anchor byte-equality of the raw ML-KEM-1024 encapsulation
+    /// key / ciphertext / shared secret with `@noble/post-quantum` (ml_kem1024)
+    /// and any other FIPS-203 implementation, across Rust / WASM / NIF.
+    #[test]
+    fn mlkem1024_fips203_kat() {
+        use crate::hash::sha3_512;
+        fn hx(b: &[u8]) -> String {
+            b.iter().map(|x| format!("{x:02x}")).collect()
+        }
+        let seed = [0x07u8; MLKEM1024_SEED_LEN];
+        let dk = DecapsulationKey::<MlKem1024>::from_seed(seed.into());
+        let ek = dk.encapsulation_key();
+        let ek_bytes = ek.to_bytes();
+        assert_eq!(ek_bytes.len(), MLKEM1024_EK_LEN);
+        assert_eq!(
+            hx(&sha3_512(ek_bytes.as_slice())),
+            "21d44f22f8467cde9040b3e6161c9353f9dd48e6854d3125c2690826a06ad707\
+             8fa79245d715430afcca6bbd94a352e95081bd0b65aa210661f4deafdfc2fee4"
+        );
+        let coins = [0x09u8; 32];
+        let (ct, ss) = ek.encapsulate_deterministic(&coins.into());
+        assert_eq!(ct.as_slice().len(), MLKEM1024_CT_LEN);
+        assert_eq!(
+            hx(&sha3_512(ct.as_slice())),
+            "79ca73f654930548ecedd30019fcd19f4ca6b653aef0bc647df8389945d04f81\
+             47d5c45c8c8b93b679f3c15a4424c6c38c57e23d3383fd1e72964e98c1f19475"
+        );
+        assert_eq!(
+            hx(ss.as_slice()),
+            "a6b0741c68de147722d30abc60415c846f7130a51611c0de65cfe019cd9913f4"
+        );
     }
 }

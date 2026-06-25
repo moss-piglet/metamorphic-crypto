@@ -8,6 +8,7 @@ use crate::b64;
 use crate::box_seal;
 use crate::hybrid;
 use crate::hybrid::SecurityLevel;
+use crate::suite::Suite;
 
 /// Seal `plaintext` bytes to a user's public key(s).
 ///
@@ -39,6 +40,30 @@ pub fn seal_for_user_with_level(
 ) -> Result<String, CryptoError> {
     match pq_public_key_b64 {
         Some(pq) if !pq.is_empty() => hybrid::hybrid_seal_with_level(plaintext, pq, level),
+        _ => box_seal::box_seal(plaintext, public_key_b64),
+    }
+}
+
+/// Seal `plaintext` bytes to a user's public key(s) under a full CNSA-2.0
+/// [`Suite`] + [`SecurityLevel`].
+///
+/// - If `pq_public_key_b64` is provided (non-empty), seals with
+///   [`hybrid::hybrid_seal_suite`] (default context label). The PQ public key
+///   must match the chosen `(suite, level)` combined-key layout.
+/// - Otherwise, falls back to legacy X25519 `box_seal` (suite/level ignored).
+///
+/// New-suite ciphertexts (`0x10/0x13/0x14`) are opened transparently by
+/// [`unseal_from_user`], which routes on the version tag (using the default
+/// context label; use [`hybrid::hybrid_open_with_context`] for custom labels).
+pub fn seal_for_user_with_suite(
+    plaintext: &[u8],
+    public_key_b64: &str,
+    pq_public_key_b64: Option<&str>,
+    suite: Suite,
+    level: SecurityLevel,
+) -> Result<String, CryptoError> {
+    match pq_public_key_b64 {
+        Some(pq) if !pq.is_empty() => hybrid::hybrid_seal_suite(plaintext, pq, suite, level),
         _ => box_seal::box_seal(plaintext, public_key_b64),
     }
 }
@@ -223,5 +248,45 @@ mod tests {
         assert!(
             unseal_from_user(&ct, &kp.public_key, &kp.private_key, Some(&hkp2.secret_key)).is_err()
         );
+    }
+
+    #[test]
+    fn seal_for_user_with_suite_pure_cnsa2_roundtrip() {
+        use crate::hybrid::generate_hybrid_keypair_suite;
+        let kp = generate_keypair();
+        let hkp = generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+        let pt = b"pure CNSA-2.0 context key";
+        let ct = seal_for_user_with_suite(
+            pt,
+            &kp.public_key,
+            Some(&hkp.public_key),
+            Suite::PureCnsa2,
+            SecurityLevel::Cat5,
+        )
+        .unwrap();
+        assert!(hybrid::is_hybrid_ciphertext(&ct));
+        // unseal_from_user routes on the 0x10 tag (default context label).
+        let opened =
+            unseal_from_user(&ct, &kp.public_key, &kp.private_key, Some(&hkp.secret_key)).unwrap();
+        assert_eq!(b64::decode(&opened).unwrap(), pt);
+    }
+
+    #[test]
+    fn seal_for_user_with_suite_matched_cat5_roundtrip() {
+        use crate::hybrid::generate_hybrid_keypair_suite;
+        let kp = generate_keypair();
+        let hkp = generate_hybrid_keypair_suite(Suite::HybridMatched, SecurityLevel::Cat5).unwrap();
+        let pt = b"matched cat-5 context key";
+        let ct = seal_for_user_with_suite(
+            pt,
+            &kp.public_key,
+            Some(&hkp.public_key),
+            Suite::HybridMatched,
+            SecurityLevel::Cat5,
+        )
+        .unwrap();
+        let opened =
+            unseal_from_user(&ct, &kp.public_key, &kp.private_key, Some(&hkp.secret_key)).unwrap();
+        assert_eq!(b64::decode(&opened).unwrap(), pt);
     }
 }

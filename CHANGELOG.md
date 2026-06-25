@@ -1,5 +1,110 @@
 # Changelog
 
+## v0.7.0 (2026-06-25)
+
+Adds an **opt-in CNSA 2.0 suite axis** to both the KEM/seal and signature
+layers — fully additive and **non-breaking**: every existing artifact, tag,
+function, and byte path is untouched, and `Suite::Hybrid` stays the default.
+
+### New `Suite` axis (orthogonal to `SecurityLevel`)
+
+A new `Suite` enum composes with the existing `SecurityLevel` (Cat-1/3/5), so a
+developer chooses posture with a single extra argument while the rest of the API
+surface stays identical:
+
+- **`Suite::Hybrid`** — default & recommended. The existing classical+PQ
+  strict-AND constructions (ML-KEM + X25519 KEM; ML-DSA + Ed25519 signatures).
+  Byte-for-byte unchanged.
+- **`Suite::HybridMatched`** — opt-in. The classical partner is matched to the
+  PQ category. The lowest shared rung is identical
+  to `Hybrid` (no new format), so nothing breaks.
+- **`Suite::PureCnsa2`** — opt-in. Pure post-quantum, no classical half (the NSA
+  CNSA-2.0 box). Cat-5 only in this release.
+
+### KEM / seal (target of #311)
+
+- **PureCnsa2 (Cat-5):** ML-KEM-1024 + AES-256-GCM. Tag `0x10`. Public key =
+  ML-KEM-1024 ek (1568 B).
+- **HybridMatched Cat-3:** ML-KEM-768 + **X448** + AES-256-GCM. Tag `0x13`.
+- **HybridMatched Cat-5:** ML-KEM-1024 + **P-521 ECDH** + AES-256-GCM. Tag `0x14`.
+- **HybridMatched Cat-1** reuses the existing `0x01` X25519 construction (no
+  duplicate format).
+- **Seal envelope** (new suites only): KEM shared secret(s) →
+  `HKDF-SHA512(info = suite_tag ‖ context_label)` → single-use AES-256 key →
+  `AES-256-GCM(96-bit random nonce, AAD = suite_tag ‖ context_label, full
+128-bit tag)`. Layout: `tag(1) ‖ kem_ct ‖ [ecc_eph_pk] ‖ nonce(12) ‖ ct ‖
+gcm_tag(16)`. Because each encapsulation yields a fresh KEM secret, the AES key
+  is single-use, so the random nonce can never repeat — SIV-grade misuse
+  resistance without leaving the CNSA-approved set (no AES-GCM-SIV).
+- The legacy `combineKEMS` (SHA3-256) + XSalsa20-Poly1305 path and all
+  `0x01/0x02/0x03` bytes are **byte-for-byte untouched**. Deliberate hash split:
+  HKDF-SHA512 for _key derivation_; SHA3-512 remains for _leaf/transcript_
+  hashing.
+- New Rust fns (crate root): `generate_hybrid_keypair_suite`,
+  `hybrid_seal_suite`, `hybrid_seal_suite_with_context`, `hybrid_open_with_context`,
+  `seal_for_user_with_suite`, plus the `Suite` enum and `SEAL_CONTEXT_V1`.
+  `hybrid_open` / `unseal_from_user` auto-detect the new tags (using the default
+  context label).
+- New WASM exports: `generateHybridKeyPairSuite`, `hybridSealSuite`,
+  `hybridSealSuiteWithContext`, `hybridOpenWithContext`, `sealForUserWithSuite`.
+
+### Signatures (target of #312)
+
+- **PureCnsa2 (Cat-5):** ML-DSA-87 only. Tag `0x10`.
+- **HybridMatched Cat-3:** ML-DSA-65 + **Ed448** (deterministic, RFC 8032).
+  Tag `0x13`.
+- **HybridMatched Cat-5:** ML-DSA-87 + **ECDSA-P-521**, **hedged RFC 6979**
+  (deterministic nonce + added OS entropy via RustCrypto `RandomizedSigner`,
+  consistent with the existing hedged-ML-DSA posture). Tag `0x14`.
+- **HybridMatched Cat-2** reuses the existing `0x01` Ed25519 construction.
+- Layouts (fixed-size classical first, so the variable ML-DSA tail needs no
+  length prefix): `sig = tag ‖ [classical_sig] ‖ ml_dsa_sig`;
+  `pk = tag ‖ [classical_pk] ‖ ml_dsa_pk`; `sk = tag ‖ [classical_seed] ‖
+ml_dsa_seed`. The same I2OSP length-prefixed domain-separation framing is
+  reused for all suites. `sign` / `verify` / `derive_public_key` auto-detect the
+  suite from the version tag (no suite argument needed).
+- New fns: `generate_signing_keypair_suite` (Rust) and
+  `generateSigningKeyPairSuite` (WASM). Existing `sign`/`verify` byte paths
+  unchanged.
+
+### Context labels (RESOLVED)
+
+Versioned grammar `"<namespace>/<purpose>/v<major>"`. Library defaults
+`"metamorphic/seal/v1"` (`SEAL_CONTEXT_V1`) and `"metamorphic/sign/v1"`
+(`SIGN_CONTEXT_V1`). The namespace is the one per-tenant knob; it is bound into
+the HKDF `info` + GCM AAD (seal) and the I2OSP-framed signed message (sign).
+
+### Dependencies (single pure-Rust stack; `#![forbid(unsafe_code)]` preserved)
+
+All RustCrypto, no `aws-lc-rs` (which would break WASM + forbid-unsafe). Pinned
+to the same rc/pre generation as the existing `sha3 0.11` / `ml-kem 0.3` /
+`ml-dsa 0.1` (digest 0.11 / crypto-common 0.2) stack — no mixed generations:
+`aes-gcm 0.11.0-rc.4` (NCC-audited 2023), `hkdf 0.13`, `x448 0.14.0-pre.12`,
+`p521 0.14.0-rc.14` (ecdh + ecdsa), `ed448-goldilocks 0.14.0-pre.15`. The CNSA-2.0
+deps pull in getrandom 0.4, whose wasm32 backend is opted into via the `wasm_js`
+feature (renamed `getrandom_v04`) so it coexists with the 0.2 instance — exactly
+the WASM-friendliness that staying pure-Rust buys.
+
+### Honesty / claims discipline
+
+Claim: "CNSA 2.0 algorithm suite, NCC-audited components, pure-Rust,
+memory-safe (`forbid-unsafe`)." **Not** "FIPS 140-3 validated." `PureCnsa2` is
+more standards-compliant but leans entirely on the (not-yet-independently-
+audited at our layer) lattice implementation, so the strict-AND `Hybrid` default
+keeps the classical backstop until the PQ impls are audited/validated.
+
+### Tests / KATs
+
+- AES-256-GCM NIST CAVP vectors; HKDF-SHA512 known-answer vector; ML-KEM-1024
+  FIPS-203 deterministic KAT (anchors raw byte-equality with `@noble/post-quantum`
+  and any FIPS-203 impl).
+- Full PureCnsa2 + HybridMatched seal round-trips, context-label binding, tamper
+  rejection; PureCnsa2 + matched sign/verify round-trips with strict-AND
+  corruption tests; cross-suite/-key rejection.
+- New `tests/cnsa2_vectors.rs` pins the wire structure (tags, FIPS sizes) and the
+  deterministic signature public keys (via SHA3-512 digest) for cross-language
+  (Rust / WASM / NIF) parity.
+
 ## v0.6.0 (2026-06-24)
 
 - Extend the hybrid post-quantum **KEM** to the full standardized ML-KEM range
