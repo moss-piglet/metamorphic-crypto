@@ -5,7 +5,7 @@
 //! [`crate::sign::SignatureLevel`]: `SecurityLevel` selects the ML-* parameter
 //! set (Cat-1/3/5), while `Suite` selects the *composition posture* (classical
 //! hybrid vs. matched-strength hybrid vs. pure post-quantum). Both the KEM /
-//! seal layer ([`crate::hybrid`]) and the signature layer ([`crate::sign`])
+//! seal layer ([`crate::hybrid`]) and the signature layer ([`sign`](mod@crate::sign))
 //! consume the same axis, so a developer flips between postures with a single
 //! one-argument change while the rest of the API surface stays identical.
 //!

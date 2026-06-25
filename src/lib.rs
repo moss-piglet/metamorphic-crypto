@@ -16,6 +16,11 @@
 //!
 //! ## Ciphertext formats
 //!
+//! The legacy `Suite::Hybrid` (default) formats are byte-for-byte unchanged. The
+//! opt-in CNSA 2.0 suites use an AES-256-GCM envelope keyed by
+//! `HKDF-SHA512(info = suite_tag || context_label)` (see [`suite`]); the
+//! `nonce (12B) || ct || gcm_tag (16B)` portion is the AEAD output.
+//!
 //! | Format | Layout |
 //! |--------|--------|
 //! | Secretbox | `nonce (24B) \|\| ciphertext (len + 16B MAC)` |
@@ -23,16 +28,24 @@
 //! | Hybrid v1 (Cat-1) | `0x01 \|\| ML-KEM-512 ct (768B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
 //! | Hybrid v2 (Cat-3) | `0x02 \|\| ML-KEM-768 ct (1088B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
 //! | Hybrid v3 (Cat-5) | `0x03 \|\| ML-KEM-1024 ct (1568B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
+//! | PureCnsa2 (Cat-5) | `0x10 \|\| ML-KEM-1024 ct (1568B) \|\| nonce (12B) \|\| ct \|\| gcm_tag (16B)` |
+//! | HybridMatched (Cat-3) | `0x13 \|\| ML-KEM-768 ct (1088B) \|\| X448 eph pk (56B) \|\| nonce (12B) \|\| ct \|\| gcm_tag (16B)` |
+//! | HybridMatched (Cat-5) | `0x14 \|\| ML-KEM-1024 ct (1568B) \|\| P-521 eph pk (133B) \|\| nonce (12B) \|\| ct \|\| gcm_tag (16B)` |
 //!
-//! ## Signature format
+//! ## Signature formats
 //!
-//! Composite ML-DSA + Ed25519 signatures (see [`sign`]); strict-AND verification.
+//! The default `Suite::Hybrid` is a composite ML-DSA + Ed25519 signature with
+//! strict-AND verification. The opt-in CNSA 2.0 suites place the fixed-size
+//! classical component first (so the variable ML-DSA tail needs no length
+//! prefix) and reuse the same I2OSP domain-separation framing. `PureCnsa2` has
+//! no classical component. All are strict-AND verified.
 //!
-//! | Component  | Layout |
-//! |------------|--------|
-//! | signature  | `tag \|\| ed25519_sig (64B) \|\| ml_dsa_sig` |
-//! | public_key | `tag \|\| ed25519_pk (32B) \|\| ml_dsa_pk` |
-//! | secret_key | `tag \|\| ed25519_seed (32B) \|\| ml_dsa_seed (32B)` |
+//! | Suite (level) | signature | public_key | secret_key |
+//! |---------------|-----------|------------|------------|
+//! | Hybrid (Cat-2/3/5) | `tag \|\| ed25519_sig (64B) \|\| ml_dsa_sig` | `tag \|\| ed25519_pk (32B) \|\| ml_dsa_pk` | `tag \|\| ed25519_seed (32B) \|\| ml_dsa_seed (32B)` |
+//! | HybridMatched (Cat-3) | `0x13 \|\| ed448_sig (114B) \|\| ml_dsa65_sig` | `0x13 \|\| ed448_pk (57B) \|\| ml_dsa65_pk` | `0x13 \|\| ed448_seed (57B) \|\| ml_dsa_seed (32B)` |
+//! | HybridMatched (Cat-5) | `0x14 \|\| ecdsa_p521_sig (132B) \|\| ml_dsa87_sig` | `0x14 \|\| p521_pk (133B) \|\| ml_dsa87_pk` | `0x14 \|\| p521_seed (66B) \|\| ml_dsa_seed (32B)` |
+//! | PureCnsa2 (Cat-5) | `0x10 \|\| ml_dsa87_sig` | `0x10 \|\| ml_dsa87_pk` | `0x10 \|\| ml_dsa_seed (32B)` |
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
