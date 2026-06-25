@@ -1,6 +1,8 @@
 # metamorphic-crypto
 
-Zero-knowledge end-to-end encryption library with post-quantum hybrid KEM.
+Zero-knowledge end-to-end encryption library with post-quantum hybrid KEM, hybrid
+PQ signatures, and an opt-in **CNSA 2.0** suite axis (matched-strength hybrid +
+pure ML-KEM-1024 / ML-DSA-87 / AES-256-GCM).
 
 Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.com) — privacy-first apps by [Moss Piglet Corporation](https://mosspiglet.dev) where all user data is encrypted client-side and the server only stores opaque ciphertext.
 
@@ -13,6 +15,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ KEM** (ML-KEM-1024 + X25519) — NIST Cat-5 post-quantum key encapsulation (opt-in)
 - **Argon2id KDF** — password-based key derivation (libsodium INTERACTIVE parameters)
 - **Hybrid PQ signatures** (ML-DSA + Ed25519) — NIST Cat-2/3/5 composite digital signatures (strict AND)
+- **CNSA 2.0 suite axis** (opt-in) — matched-strength hybrid (X448 / P-521 / Ed448 / ECDSA-P-521) and pure post-quantum (ML-KEM-1024, ML-DSA-87, AES-256-GCM)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
@@ -232,6 +235,107 @@ flaw were found in the young `ml-dsa` implementation, the composite remains at
 least as strong as Ed25519. This is stated honestly so integrators can choose
 while the post-quantum implementation matures toward audit / FIPS validation.
 
+## CNSA 2.0 suite axis (opt-in)
+
+By default everything above is **`Suite::Hybrid`** — the classical+PQ strict-AND
+constructions (ML-KEM + X25519; ML-DSA + Ed25519). If you have no specific
+mandate, that is the recommended choice and you can ignore this section.
+
+For deployments that must follow the NSA's **Commercial National Security
+Algorithm Suite 2.0** (CNSA 2.0 / NIST IR 8547), a `Suite` axis lets you raise
+the posture with a *single extra argument*. It is **orthogonal** to the
+`SecurityLevel` (Cat-1/3/5) you already know, so you really have two independent
+knobs:
+
+```
+            posture (Suite)                  ×   parameter set (SecurityLevel)
+  ┌──────────────────────────────┐               ┌───────────────────────┐
+  │ Hybrid         (default)      │               │ Cat-1 / Cat-3 / Cat-5 │
+  │ HybridMatched  (opt-in)       │               └───────────────────────┘
+  │ PureCnsa2      (opt-in)       │
+  └──────────────────────────────┘
+```
+
+| Suite | What it is | Classical partner | Status |
+|-------|------------|-------------------|--------|
+| `Hybrid` | Existing strict-AND classical+PQ. **Byte-for-byte unchanged.** | X25519 / Ed25519 (every tier) | **Default, recommended** |
+| `HybridMatched` | Classical partner matched to the PQ category so it is never the weak link | KEM: Cat-3→X448, Cat-5→P-521 ECDH · Sign: Cat-3→Ed448, Cat-5→ECDSA-P-521 | Opt-in |
+| `PureCnsa2` | Pure post-quantum, no classical half (the CNSA-2.0 box) | none | Opt-in, **Cat-5 only** |
+
+`HybridMatched` at the lowest rung (KEM Cat-1 / sign Cat-2) is identical to
+`Hybrid` — no new format is produced there, so nothing breaks.
+
+### New wire formats (new suites only)
+
+The `Hybrid` suite (and `HybridMatched` at the lowest rung) keep their existing
+`0x01/0x02/0x03` ciphertext tags and byte layout untouched. The matched / pure
+suites use new tags and a CNSA-correct seal envelope:
+
+| Suite + level | KEM | Tag |
+|---------------|-----|-----|
+| `PureCnsa2` Cat-5 | ML-KEM-1024 + AES-256-GCM | `0x10` |
+| `HybridMatched` Cat-3 | ML-KEM-768 + X448 + AES-256-GCM | `0x13` |
+| `HybridMatched` Cat-5 | ML-KEM-1024 + P-521 ECDH + AES-256-GCM | `0x14` |
+
+```text
+ikm  = ss_mlkem (PureCnsa2)  |  ss_mlkem || ss_ecc (HybridMatched)
+key  = HKDF-SHA512(ikm, info = suite_tag || context_label)   -> 32-byte AES-256 key
+out  = AES-256-GCM(key, 96-bit random nonce, AAD = suite_tag || context_label)
+wire = tag(1) || kem_ct || [ecc_eph_pk] || nonce(12) || ct || gcm_tag(16)
+```
+
+Each encapsulation yields a fresh KEM secret, so the derived AES-256 key is
+single-use and the random 96-bit nonce can never repeat — SIV-grade misuse
+resistance without leaving the CNSA-approved set (no AES-GCM-SIV). Note the
+deliberate hash split: **HKDF-SHA512** for *key derivation* here; **SHA3-512**
+stays the choice for *leaf/transcript* hashing (`sha3_512_with_context`).
+
+### Context labels
+
+The new suites bind a versioned context label into both the HKDF `info` and the
+GCM AAD (and, for signatures, the I2OSP-framed message). Grammar:
+`"<namespace>/<purpose>/v<major>"`. The **namespace** is the one per-tenant knob;
+the protocol shape stays fixed. Library defaults are `SEAL_CONTEXT_V1`
+(`"metamorphic/seal/v1"`) and `SIGN_CONTEXT_V1` (`"metamorphic/sign/v1"`); pass
+your own (e.g. `"mosslet/seal/v1"`) to namespace your deployment.
+
+### Usage (Rust)
+
+```rust
+use metamorphic_crypto::{
+    Suite, SecurityLevel, SignatureLevel, SEAL_CONTEXT_V1, SIGN_CONTEXT_V1,
+    generate_hybrid_keypair_suite, hybrid_seal_suite, hybrid_open_with_context,
+    generate_signing_keypair_suite, sign, verify,
+};
+
+// --- KEM / seal: the pure CNSA-2.0 box (ML-KEM-1024 + AES-256-GCM) ---
+let kp = generate_hybrid_keypair_suite(Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+let sealed = hybrid_seal_suite(b"context_key_bytes", &kp.public_key,
+                               Suite::PureCnsa2, SecurityLevel::Cat5).unwrap();
+// `hybrid_open` auto-detects the tag using the DEFAULT context label; if you
+// sealed with a custom label, open with it explicitly:
+let opened = hybrid_open_with_context(&sealed, &kp.secret_key, SEAL_CONTEXT_V1).unwrap();
+
+// --- Signatures: ML-DSA-87 only (Cat-5 pure) ---
+let sk = generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat5).unwrap();
+let sig = sign(b"checkpoint", SIGN_CONTEXT_V1, &sk.secret_key).unwrap();
+assert!(verify(b"checkpoint", SIGN_CONTEXT_V1, &sig, &sk.public_key).unwrap());
+// `sign` / `verify` / `derive_public_key` auto-detect the suite from the version
+// tag — no suite argument is needed once the key exists.
+```
+
+`seal_for_user_with_suite` is the user-facing seal that falls back to legacy
+X25519 when no PQ key is present, mirroring `seal_for_user_with_level`.
+
+### Honest claims
+
+Claim: **"CNSA 2.0 algorithm suite, NCC-audited components, pure-Rust,
+memory-safe (`forbid-unsafe`)."** **Not** "FIPS 140-3 validated." `PureCnsa2` is
+more standards-compliant but leans entirely on the (not-yet-independently-audited
+at our layer) lattice implementation, which is exactly why the strict-AND
+`Hybrid` default stays recommended: it keeps the classical backstop until the PQ
+implementations are audited / validated.
+
 ## WASM (browser)
 
 ```bash
@@ -277,6 +381,35 @@ const msg = btoa("transparency log entry");
 const sig = sign(msg, "metamorphic/sign/v1", kp.secretKey);
 const ok = verify(msg, "metamorphic/sign/v1", sig, kp.publicKey); // true
 ```
+
+### CNSA 2.0 suites (WASM)
+
+The `Suite` axis is exposed as a string argument (`"hybrid"` (default),
+`"hybridMatched"`, or `"pureCnsa2"`) alongside the usual `"cat1"`/`"cat3"`/`"cat5"`
+level. Decryption / verification auto-detect the suite from the version tag.
+
+```js
+import init, {
+  generateHybridKeyPairSuite, hybridSealSuite, hybridOpenWithContext,
+  generateSigningKeyPairSuite, sign, verify,
+} from './pkg/metamorphic_crypto.js';
+await init();
+
+// Pure CNSA-2.0 KEM box (ML-KEM-1024 + AES-256-GCM)
+const kp = generateHybridKeyPairSuite("pureCnsa2", "cat5"); // { publicKey, secretKey }
+const sealed = hybridSealSuite(btoa("key material"), kp.publicKey, "pureCnsa2", "cat5");
+// Open with the context label used at seal time (default "metamorphic/seal/v1"):
+const opened = hybridOpenWithContext(sealed, kp.secretKey, "metamorphic/seal/v1"); // base64
+
+// Pure ML-DSA-87 signatures
+const sk = generateSigningKeyPairSuite("pureCnsa2", "cat5");
+const sig = sign(btoa("checkpoint"), "metamorphic/sign/v1", sk.secretKey);
+const ok = verify(btoa("checkpoint"), "metamorphic/sign/v1", sig, sk.publicKey); // true
+```
+
+For a custom per-tenant namespace, use `hybridSealSuiteWithContext(...,
+"mosslet/seal/v1")` and open with the same label. `sealForUserWithSuite` mirrors
+`sealForUser` with the suite/level appended.
 
 ## Tests
 
