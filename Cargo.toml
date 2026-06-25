@@ -1,6 +1,6 @@
 [package]
 name = "metamorphic-crypto"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM + X25519) and an opt-in CNSA 2.0 suite axis (matched-strength hybrid + pure ML-KEM-1024 / ML-DSA-87 / AES-256-GCM)"

@@ -1,6 +1,6 @@
 # @f0rest8/metamorphic-crypto
 
-Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM-512/768/1024 + X25519).
+Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM-512/768/1024 + X25519), hybrid PQ signatures (ML-DSA + Ed25519), and an opt-in CNSA 2.0 suite axis.
 
 Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.com) — privacy-first apps by [Moss Piglet Corporation](https://mosspiglet.dev) where all user data is encrypted client-side and the server only stores opaque ciphertext.
 
@@ -217,6 +217,49 @@ across native Rust, WASM, and the Elixir NIF.
 > audited** — it is included as defense-in-depth on top of Ed25519, so the
 > composite remains at least as strong as Ed25519 even if a flaw is found in the
 > young post-quantum implementation. Pinned and tracked for the FIPS-mode roadmap.
+
+### CNSA 2.0 suite axis (opt-in)
+
+Everything above is the default **`hybrid`** suite (classical+PQ strict-AND). If
+you have no specific mandate, that is the recommended choice. For deployments
+that must follow the NSA's **CNSA 2.0** suite (NIST IR 8547), a `suite` argument
+raises the posture. It is **orthogonal** to the `"cat1"`/`"cat3"`/`"cat5"` level,
+so you have two independent knobs.
+
+| `suite` string | What it is | Status |
+|----------------|------------|--------|
+| `"hybrid"` | Existing classical+PQ strict-AND. Byte-for-byte unchanged. | **Default, recommended** |
+| `"hybridMatched"` | Classical partner matched to the PQ category (KEM: Cat-3→X448, Cat-5→P-521 · Sign: Cat-3→Ed448, Cat-5→ECDSA-P-521) | Opt-in |
+| `"pureCnsa2"` | Pure post-quantum, no classical half (ML-KEM-1024 / AES-256-GCM; ML-DSA-87) | Opt-in, **Cat-5 only** |
+
+```js
+import {
+  generateHybridKeyPairSuite, hybridSealSuite, hybridOpenWithContext,
+  generateSigningKeyPairSuite, sign, verify,
+} from "@f0rest8/metamorphic-crypto";
+
+// Pure CNSA-2.0 KEM box (ML-KEM-1024 + AES-256-GCM)
+const kp = generateHybridKeyPairSuite("pureCnsa2", "cat5"); // { publicKey, secretKey }
+const sealed = hybridSealSuite(plaintextBase64, kp.publicKey, "pureCnsa2", "cat5");
+// Open with the context label used at seal time (default "metamorphic/seal/v1"):
+const opened = hybridOpenWithContext(sealed, kp.secretKey, "metamorphic/seal/v1"); // base64
+
+// Pure ML-DSA-87 signatures — sign/verify auto-detect the suite from the tag
+const sk = generateSigningKeyPairSuite("pureCnsa2", "cat5");
+const sig = sign(btoa("checkpoint"), "metamorphic/sign/v1", sk.secretKey);
+const ok = verify(btoa("checkpoint"), "metamorphic/sign/v1", sig, sk.publicKey); // true
+```
+
+The new suites bind a versioned **context label** (`"<namespace>/<purpose>/v<major>"`)
+into the seal — use `hybridSealSuiteWithContext(..., "mosslet/seal/v1")` for a
+custom per-tenant namespace and open with the same label. `sealForUserWithSuite`
+mirrors `sealForUser` with the suite/level appended (legacy X25519 fallback when
+no PQ key is present).
+
+> **Honest claims.** "CNSA 2.0 algorithm suite, NCC-audited components,
+> pure-Rust, memory-safe (`forbid-unsafe`)" — **not** "FIPS 140-3 validated."
+> `pureCnsa2` drops the classical backstop, so the strict-AND `hybrid` default
+> stays recommended until the lattice implementations are independently audited.
 
 ## Security levels
 

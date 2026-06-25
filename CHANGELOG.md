@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.7.1 (2026-06-25)
+
+Docs + dependency/CI maintenance. **No functional or wire-format changes** — the
+crate's source, public API, version tags, and byte layout are byte-for-byte
+identical to v0.7.0.
+
+- **Docs:** document the v0.7.0 **CNSA 2.0 suite axis** in `README.md` and
+  `npm-README.md` (the orthogonal `Suite` × `SecurityLevel` model;
+  `Hybrid` / `HybridMatched` / `PureCnsa2`; the HKDF-SHA512 + AES-256-GCM seal
+  envelope and `0x10/0x13/0x14` tags; context labels; Rust + WASM usage; honest
+  "CNSA 2.0 suite, not FIPS-validated" claims). Newcomers can now discover the
+  `generate_*_suite` / `*Suite` APIs without reading the source.
+- **Dependencies** (Cargo.lock only; within existing semver ranges — the pinned
+  CNSA-2.0 rc/pre deps are untouched): `zeroize` 1.8.2 → 1.9.0, `zeroize_derive`
+  1.4.3 → 1.5.0, `js-sys` 0.3.100 → 0.3.103, `wasm-bindgen` 0.2.123 → 0.2.126.
+- **CI / release** (GitHub Actions, SHA-pinned): `actions/checkout` v6 → v7,
+  `rust-lang/crates-io-auth-action` v1.0.4 → v1.0.5,
+  `softprops/action-gh-release` v3.0.0 → v3.0.1.
+
 ## v0.7.0 (2026-06-25)
 
 Adds an **opt-in CNSA 2.0 suite axis** to both the KEM/seal and signature
