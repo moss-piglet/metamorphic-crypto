@@ -107,7 +107,8 @@ pub fn unseal_from_user(
 
 /// Seal plaintext bytes (base64) to a user's key(s) at a specific security level.
 ///
-/// `level` must be `"cat3"` (ML-KEM-768, default) or `"cat5"` (ML-KEM-1024).
+/// `level` must be `"cat1"` (ML-KEM-512), `"cat3"` (ML-KEM-768, default), or
+/// `"cat5"` (ML-KEM-1024).
 /// If `pq_public_key_b64` is absent or empty, falls back to legacy X25519.
 #[wasm_bindgen(js_name = "sealForUserWithLevel")]
 pub fn seal_for_user_with_level(
@@ -125,6 +126,16 @@ pub fn seal_for_user_with_level(
 // ---------------------------------------------------------------------------
 // Hybrid PQ KEM
 // ---------------------------------------------------------------------------
+
+/// Generate a ML-KEM-512 + X25519 keypair (Cat-1). Returns JSON: `{ publicKey, secretKey }`.
+#[wasm_bindgen(js_name = "generateHybridKeyPair512")]
+pub fn generate_hybrid_keypair_512() -> JsValue {
+    let kp = hybrid::generate_hybrid_keypair_512();
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &kp.public_key.into()).unwrap();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &kp.secret_key.into()).unwrap();
+    obj.into()
+}
 
 /// Generate a ML-KEM-768 keypair. Returns JSON: `{ publicKey, secretKey }`.
 #[wasm_bindgen(js_name = "generateHybridKeyPair")]
@@ -367,13 +378,14 @@ pub fn verify(
 
 /// Parse a JS string into a `SecurityLevel`.
 ///
-/// Accepts `"cat3"`, `"cat5"` (case-insensitive). Defaults to Cat-3 on empty/null.
+/// Accepts `"cat1"`, `"cat3"`, `"cat5"` (case-insensitive). Defaults to Cat-3 on empty/null.
 fn parse_security_level(level: &str) -> Result<SecurityLevel, JsValue> {
     match level.to_ascii_lowercase().as_str() {
+        "cat1" => Ok(SecurityLevel::Cat1),
         "" | "cat3" => Ok(SecurityLevel::Cat3),
         "cat5" => Ok(SecurityLevel::Cat5),
         other => Err(JsValue::from_str(&format!(
-            "invalid security level \"{other}\": expected \"cat3\" or \"cat5\""
+            "invalid security level \"{other}\": expected \"cat1\", \"cat3\", or \"cat5\""
         ))),
     }
 }

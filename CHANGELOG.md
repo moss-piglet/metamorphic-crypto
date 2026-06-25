@@ -1,9 +1,78 @@
 # Changelog
 
-## v0.5.0 (unreleased)
+## v0.6.0 (2026-06-24)
+
+- Extend the hybrid post-quantum **KEM** to the full standardized ML-KEM range
+  (additive, non-breaking). ML-KEM coverage now spans every NIST (FIPS 203)
+  parameter set: **Cat-1 (512)**, Cat-3 (768, default), Cat-5 (1024). Together
+  with the ML-DSA 44/65/87 signatures from v0.5.0 (Cat-2/3/5), the crate now
+  covers **all** standardized FIPS 203 / 204 parameter sets — no rolled or
+  invented parameters.
+  - New tier: **Cat-1 = ML-KEM-512 + X25519** (~AES-128), version tag `0x01`.
+    NIST defines ML-KEM only at categories 1/3/5; there is no category-2/4
+    ML-KEM set, so none is offered.
+  - New Rust fns, re-exported at the crate root: `generate_hybrid_keypair_512`
+    and `hybrid_seal_512`, plus the `SecurityLevel::Cat1` variant wired into
+    `generate_hybrid_keypair_with_level` / `hybrid_seal_with_level`.
+  - `hybrid_open` now auto-detects Cat-1 (`0x01`), Cat-3 (`0x02`), and Cat-5
+    (`0x03`) from the version byte; `is_hybrid_ciphertext` recognizes all three.
+    The KEM tags form a dense ordered sequence (Cat-1=`0x01`, Cat-3=`0x02`,
+    Cat-5=`0x03`).
+  - Wire format (Cat-1): `0x01 || ML-KEM-512 ct (768 B) || X25519 eph pk (32 B)
+|| nonce (24 B) || secretbox ct`. Public key = ML-KEM-512 ek (800 B) ||
+    X25519 pk (32 B) = 832 bytes; secret key = 32-byte root seed.
+  - Version-tag note: tags are **per-artifact-type wire-format versions**, not
+    global category codes. KEM and signature tags agree on the shared Cat-3
+    (`0x02`) / Cat-5 (`0x03`) rungs; they intentionally diverge at `0x01`
+    (KEM = Cat-1 ML-KEM-512, signatures = Cat-2 ML-DSA-44) because NIST
+    standardizes ML-KEM at {1,3,5} and ML-DSA at {2,3,5}. `box_seal` is
+    unversioned (its first byte is a random X25519 pubkey byte), so `0x01` is
+    not a legacy sentinel. `hybrid_open`'s exact minimum-length gate prevents a
+    legacy ciphertext whose random first byte happens to be `0x01` from being
+    mis-routed as Cat-1 (covered by a regression test).
+  - Classical-partner caveat (documented honestly): the classical half is
+    X25519 (~Cat-1 classical) at every tier and does not scale up; at Cat-3/Cat-5
+    the PQ half dominates and X25519 is the classical floor — standard hybrid
+    practice.
+  - New WASM export: `generateHybridKeyPair512` (Cat-1 keypair generation);
+    `parse_security_level` now accepts `"cat1"`. `unsealFromUser` /
+    `unseal_from_user` unchanged — already auto-detects from the version byte.
+  - Tests mirroring Cat-3/Cat-5: roundtrip, version tag, wrong-key, key sizes,
+    ciphertext size, cross-level rejection, nondeterministic, empty plaintext,
+    plus a legacy-not-misdetected-as-Cat-1 guard.
+- Harden the unified unseal path against legacy/hybrid first-byte collisions
+  (data-availability only; not a security fix; no wire-format change). The
+  unversioned legacy `box_seal` format has a random leading byte, so a legacy
+  ciphertext could in principle collide with a hybrid tag — a surface widened
+  from two tag values to three by the new Cat-1 `0x01`.
+  - `is_hybrid_ciphertext` is now **length-aware**: it returns `true` only when
+    the leading byte is a known tag **and** the total length is at least that
+    tier's minimum (the same bound `hybrid_open` enforces). This is a minor,
+    more-correct behavior change to a public function — a short legacy
+    ciphertext that merely collides on the first byte is no longer classified as
+    hybrid. Real hybrid ciphertexts are always above the minimum, so they are
+    unaffected.
+  - `unseal_from_user` now **falls back** to the legacy `box_seal_open` if hybrid
+    detection matched but the hybrid open failed. This rescues a misdetected
+    legacy ciphertext that collides on _both_ the tag byte and a hybrid-matching
+    length; a genuinely failed hybrid open of a real hybrid ciphertext still
+    fails the legacy attempt and returns an error (no silent wrong plaintext).
+    Internal only — no API or wire-format change. (The explicitly rejected
+    alternative — adding a version prefix to the unversioned legacy `box_seal`
+    format — would be a breaking wire-format change requiring a client-side
+    re-seal of all existing data, disproportionate for an availability-only
+    edge case.)
+  - Internal hardening: the per-tier minimum sealed-box length is now a single
+    source of truth (`MIN_HYBRID_512_LEN` / `_768_` / `_1024_` consts) shared by
+    the routing check (`is_hybrid_ciphertext`) and the decapsulation gate
+    (`hybrid_open_*`), so the detection bound and the open gate cannot drift
+    apart. No behavior change.
+- All existing APIs unchanged — fully backward compatible.
+
+## v0.5.0 (2026-06-24)
 
 - Add a hybrid post-quantum **signature** API (additive, non-breaking). This is
-  the signing counterpart to the existing hybrid KEM: a *composite* signature
+  the signing counterpart to the existing hybrid KEM: a _composite_ signature
   that signs every message with **both** ML-DSA (FIPS 204) **and** Ed25519
   (RFC 8032), and verifies only if **both** components are valid (strict AND).
   An attacker must break both a lattice scheme and an elliptic-curve scheme, and
@@ -20,7 +89,7 @@
     2/3/5. No SLH-DSA (FIPS 205) yet.
   - Signing mode is **hedged/randomized** ML-DSA (FIPS 204 default and most
     conservative; resilient to RNG failure and side-channel/fault-hardened).
-    Ed25519 is deterministic per RFC 8032. Signature *bytes* are therefore
+    Ed25519 is deterministic per RFC 8032. Signature _bytes_ are therefore
     non-reproducible, but the wire format (layout, tags, key derivation,
     framing) is fully deterministic and pinned.
   - Domain separation reuses the exact `sha3_512_with_context` framing:
@@ -46,7 +115,7 @@
 - All existing APIs unchanged — fully backward compatible. Encryption
   (KEM / secretbox / Argon2id) is untouched.
 
-## v0.4.0 (unreleased)
+## v0.4.0 (2026-06-22)
 
 - Add a public hashing API (additive, non-breaking). Thin one-shot wrappers over
   the already-present, audited `sha3` dependency and a new `sha2` dependency.
@@ -59,7 +128,7 @@
     hashed for different purposes cannot collide or be cross-interpreted. Wire
     format: `SHA3-512( u64_be(len(context_utf8)) || context_utf8 || data )` (an
     8-byte big-endian length prefix removes boundary ambiguity). As strong as
-    `sha3_512`; it *is* SHA3-512 over a framed message.
+    `sha3_512`; it _is_ SHA3-512 over a framed message.
   - New WASM exports: `sha3_512`, `sha3_256`, `sha256`, `sha512`, and
     `sha3_512WithContext` — take base64-encoded input, return the digest as
     base64 (consistent with the rest of the WASM API).

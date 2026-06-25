@@ -20,6 +20,7 @@
 //! |--------|--------|
 //! | Secretbox | `nonce (24B) \|\| ciphertext (len + 16B MAC)` |
 //! | box_seal | `ephemeral_pk (32B) \|\| box ciphertext` |
+//! | Hybrid v1 (Cat-1) | `0x01 \|\| ML-KEM-512 ct (768B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
 //! | Hybrid v2 (Cat-3) | `0x02 \|\| ML-KEM-768 ct (1088B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
 //! | Hybrid v3 (Cat-5) | `0x03 \|\| ML-KEM-1024 ct (1568B) \|\| X25519 eph pk (32B) \|\| nonce (24B) \|\| secretbox ct` |
 //!
@@ -58,9 +59,9 @@ pub use b64::parse_salt_from_key_hash;
 pub use box_seal::{box_seal, box_seal_open};
 pub use hash::{sha3_256, sha3_512, sha3_512_with_context, sha256, sha512};
 pub use hybrid::{
-    HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_1024,
-    generate_hybrid_keypair_with_level, hybrid_open, hybrid_seal, hybrid_seal_1024,
-    hybrid_seal_with_level, is_hybrid_ciphertext,
+    HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_512,
+    generate_hybrid_keypair_1024, generate_hybrid_keypair_with_level, hybrid_open, hybrid_seal,
+    hybrid_seal_512, hybrid_seal_1024, hybrid_seal_with_level, is_hybrid_ciphertext,
 };
 pub use kdf::derive_session_key;
 pub use keys::{
