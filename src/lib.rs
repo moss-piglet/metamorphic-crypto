@@ -71,6 +71,7 @@ pub mod seal;
 pub mod secretbox;
 pub mod sign;
 pub mod suite;
+pub mod vrf;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -113,3 +114,8 @@ pub use sign::{
     generate_signing_keypair_suite, generate_signing_keypair_with_level, sign, verify,
 };
 pub use suite::{SEAL_CONTEXT_V1, Suite};
+pub use vrf::{
+    ECVRF_EDWARDS25519_SHA512_TAI_SUITE, ECVRF_OUTPUT_LEN, ECVRF_PROOF_LEN, ECVRF_PUBLIC_KEY_LEN,
+    ECVRF_SECRET_KEY_LEN, ecvrf_generate_keypair, ecvrf_proof_to_hash, ecvrf_prove,
+    ecvrf_public_key, ecvrf_verify,
+};

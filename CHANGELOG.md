@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.8.0 (2026-06-26)
+
+Adds a new, **additive** classical **verifiable random function (VRF)** module.
+Fully non-breaking: every existing artifact, tag, function, and byte path is
+untouched, and no existing default changes.
+
+### New `vrf` module — ECVRF-EDWARDS25519-SHA512-TAI (RFC 9381)
+
+- New public module `vrf` exposing `ecvrf_generate_keypair`, `ecvrf_public_key`,
+  `ecvrf_prove`, `ecvrf_verify`, and `ecvrf_proof_to_hash`, plus the
+  `ECVRF_SECRET_KEY_LEN` / `ECVRF_PUBLIC_KEY_LEN` / `ECVRF_PROOF_LEN` /
+  `ECVRF_OUTPUT_LEN` and `ECVRF_EDWARDS25519_SHA512_TAI_SUITE` (`0x03`)
+  constants. Re-exported at the crate root.
+- **Purpose: transparency-log *index privacy*.** A VRF maps a (private) identity
+  index to a verifiable, pseudorandom value, so a CONIKS-style key-transparency
+  directory (`metamorphic-log`) can place identities at pseudorandom tree
+  positions without revealing which identities it holds. `metamorphic-log`
+  consumes this primitive so it does not pull a second, parallel curve stack —
+  keeping `metamorphic-crypto` the single source of truth for primitives.
+- Built on the **same `curve25519-dalek` backend** already in-tree behind
+  `ed25519` / the hybrid signatures (now pinned as a direct dependency for the
+  VRF's Edwards25519 arithmetic). No new packages enter the dependency tree.
+- Implements RFC 9381 ciphersuite `0x03` (Edwards25519, SHA-512, try-and-increment
+  hash-to-curve). Locked byte-for-byte against RFC 9381 Appendix B.3's official
+  known-answer vectors (Examples 16/17/18), plus tamper/forgery/length-edge
+  tests and proptest round-trips. The secret scalar and nonce prefix are
+  zeroized after use.
+- **Honest posture:** this VRF is **classical** (EC discrete log) and protects
+  exactly one property — *index privacy*. It is the one non-post-quantum piece
+  in the transparency stack; integrity, authenticity, confidentiality, and the
+  SHA3-512 hash-based commitments do not depend on it. RFC 9381's sibling suite
+  `ECVRF-EDWARDS25519-SHA512-ELL2` (`0x04`, constant-time Elligator2) is a
+  designed-in future addition pending a released curve backend that exposes a
+  conformant hash-to-curve (curve25519-dalek 5.x); because the suite octet is
+  bound into every hash, adding it is purely additive and never invalidates a
+  `0x03` proof. Not FIPS-validated.
+- New `CryptoError::Vrf` variant for structural VRF errors (a proof component
+  that is not a valid curve point, or hash-to-curve exhausting its counter
+  budget). A *verification* failure of a well-formed proof is reported as
+  `Ok(None)` from `ecvrf_verify`, mirroring the `ed25519_verify` convention.
+- No wire-format or public-API changes to any existing function.
+
 ## v0.7.2 (2026-06-26)
 
 Adds a small, **additive** raw-Ed25519 interop API. Fully non-breaking: every

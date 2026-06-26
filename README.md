@@ -17,6 +17,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ signatures** (ML-DSA + Ed25519) — NIST Cat-2/3/5 composite digital signatures (strict AND)
 - **CNSA 2.0 suite axis** (opt-in) — matched-strength hybrid (X448 / P-521 / Ed448 / ECDSA-P-521) and pure post-quantum (ML-KEM-1024, ML-DSA-87, AES-256-GCM)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
+- **Verifiable random function** (ECVRF-EDWARDS25519-SHA512-TAI, RFC 9381) — classical VRF for transparency-log *index privacy* (CONIKS-style)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
 
@@ -165,6 +166,52 @@ would add cost without protection. If you need to process secret material
 (passwords, private keys), use the right construction instead — this crate's
 Argon2id `derive_session_key` for password-based derivation, or a dedicated
 KDF/MAC. The encryption APIs that handle secrets already zeroize on drop.
+
+## Verifiable random function (ECVRF, RFC 9381)
+
+The `vrf` module exposes **ECVRF-EDWARDS25519-SHA512-TAI** — RFC 9381 ciphersuite
+`0x03`: Edwards25519 + SHA-512 + the try-and-increment hash-to-curve. A VRF lets
+the key owner compute, for any input `alpha`, a pseudorandom output `beta` plus a
+proof `pi` that `beta` is correct under their public key. Anyone with the public
+key can verify `pi`, but cannot compute `beta` for a new input and cannot learn
+`alpha` from `(pi, beta)`. This is the primitive behind **transparency-log index
+privacy** (CONIKS-style): a directory maps a private identity index to a
+verifiable, pseudorandom tree position without revealing which identities it
+holds.
+
+It is built on the **same `curve25519-dalek` backend** as the Ed25519 interop
+module — no new curve stack — and is pinned byte-for-byte by RFC 9381's own test
+vectors.
+
+```rust
+use metamorphic_crypto::{ecvrf_generate_keypair, ecvrf_prove, ecvrf_verify};
+
+let (sk, pk) = ecvrf_generate_keypair();
+let alpha = b"identity index";
+
+let pi = ecvrf_prove(&sk, alpha)?;               // 80-byte proof
+let beta = ecvrf_verify(&pk, alpha, &pi)?;       // Ok(Some(beta)) if valid
+assert!(beta.is_some());
+```
+
+| Item | Bytes | Layout |
+|------|-------|--------|
+| secret key | 32 | Ed25519-style seed |
+| public key | 32 | compressed Edwards `Y = x*B` |
+| proof `pi` | 80 | `Gamma(32) \|\| c(16) \|\| s(32)` |
+| output `beta` | 64 | `SHA-512(0x03 \|\| 0x03 \|\| cofactor*Gamma \|\| 0x00)` |
+
+**Honest posture.** This VRF is **classical** (elliptic-curve discrete log). It
+protects exactly one property — *index privacy* — and is the one non-post-quantum
+piece in the transparency stack; integrity, authenticity, confidentiality, and
+hash-based commitments are post-quantum independently of it. RFC 9381's sibling
+`ECVRF-EDWARDS25519-SHA512-ELL2` (`0x04`, constant-time Elligator2 hash-to-curve)
+is a designed-in future addition that lands when the released curve backend
+exposes a conformant hash-to-curve (curve25519-dalek 5.x); because the suite
+octet is bound into every hash, adding it is purely additive and never
+invalidates a `0x03` proof. A hybrid (post-quantum + classical) VRF is intended
+for when an audited lattice VRF exists; none does today, so it is not built.
+These primitives are not FIPS-validated.
 
 ## Hybrid PQ signatures
 

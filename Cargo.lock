@@ -767,7 +767,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "metamorphic-crypto"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -775,6 +775,7 @@ dependencies = [
  "blake2",
  "crypto_box",
  "crypto_secretbox",
+ "curve25519-dalek",
  "ed25519-dalek",
  "ed448-goldilocks",
  "getrandom 0.2.17",

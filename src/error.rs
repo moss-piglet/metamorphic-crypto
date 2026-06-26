@@ -46,6 +46,14 @@ pub enum CryptoError {
     #[error("signature: {0}")]
     Signature(String),
 
+    /// An error in the verifiable random function (ECVRF) layer that is not a
+    /// plain length mismatch — e.g. a proof component that is not a valid curve
+    /// point, or hash-to-curve exhausting its counter budget. A *verification*
+    /// failure of an otherwise well-formed proof is reported as `Ok(None)` from
+    /// `ecvrf_verify`, not as this error.
+    #[error("vrf: {0}")]
+    Vrf(String),
+
     /// Decrypted bytes are not valid UTF-8.
     #[error("UTF-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
