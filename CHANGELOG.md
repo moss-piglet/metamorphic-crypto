@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.8.1 (2026-06-26)
+
+Adds small, **additive** typed posture-introspection accessors for composite
+signatures. Fully non-breaking: no wire format, signing/verification behavior,
+default, or existing export changes — only two new public functions and their
+re-exports.
+
+### New posture accessors in `sign`
+
+- New public functions `signature_posture(public_key_b64)` and
+  `signature_posture_from_signature(signature_b64)`, each returning the typed
+  `Result<(Suite, SignatureLevel), CryptoError>`. Re-exported at the crate root.
+- **Purpose: the typed, opaque *decode* half of the suite API.** A composite
+  key/signature produced by this crate is self-describing — its leading version
+  tag encodes the producing suite and security level. These accessors surface
+  that posture so any verifier (Rust core, WASM, NIF) can check a declared
+  expectation against the observed artifact ("declared == observed") without
+  re-deriving the private wire tags. `metamorphic-log` consumes this for its
+  `NamespacePolicy` enforcement instead of duplicating tag logic.
+- **Opaque by design:** the raw `u8` version tag stays a private implementation
+  detail; only its *meaning* (the public `Suite` / `SignatureLevel` enums)
+  becomes supported, tested API.
+- **Robust:** the full decoded blob length is validated against the expected
+  length for the decoded posture (mirroring `verify`'s length checks), so a
+  truncated, over-long, or garbage blob returns a `CryptoError` rather than
+  misreporting a posture. An unknown/missing leading tag or a base64 decode
+  failure is likewise a `CryptoError`. Read-only; no secret material touched; no
+  panics on malformed input.
+- **Cat-2 aliasing:** `Suite::Hybrid` and `Suite::HybridMatched` are
+  byte-identical at Cat-2 (both tag `0x01`, since `HybridMatched` delegates to
+  `Hybrid` at the lowest shared rung), so a Cat-2 artifact canonically decodes
+  to `(Suite::Hybrid, SignatureLevel::Cat2)`.
+- **Honest framing:** this reports the *declared format posture* read from the
+  artifact's tag and validated for length — it is not itself a cryptographic
+  guarantee that a signature verifies, and not a FIPS-validation claim. Pair
+  with `verify` for authenticity.
+- No wire-format or public-API changes to any existing function.
+
 ## v0.8.0 (2026-06-26)
 
 Adds a new, **additive** classical **verifiable random function (VRF)** module.
