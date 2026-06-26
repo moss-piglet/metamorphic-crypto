@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.7.2 (2026-06-26)
+
+Adds a small, **additive** raw-Ed25519 interop API. Fully non-breaking: every
+existing artifact, tag, function, and byte path is untouched, and the hybrid PQ
+composite remains the default authenticity primitive.
+
+### New `ed25519` module — bare RFC 8032 Ed25519 (witness interop)
+
+- New public module `ed25519` exposing `ed25519_verify`, `ed25519_sign`,
+  `ed25519_public_key`, and `ed25519_generate_keypair`, plus the
+  `ED25519_SEED_LEN` / `ED25519_PUBLIC_KEY_LEN` / `ED25519_SIGNATURE_LEN`
+  constants. Re-exported at the crate root.
+- **Purpose: byte-level interoperability with the deployed C2SP
+  transparency-log witness ecosystem** (Go `sumdb/note`, sigsum,
+  transparency-dev, Tessera), which co-signs `checkpoint` / `signed-note`
+  artifacts with **raw** Ed25519 over the exact note text — no context framing
+  and no post-quantum component. `metamorphic-log` consumes this to verify
+  external witness co-signature lines (and emit its own classical line) without
+  pulling a second, parallel Ed25519 dependency, keeping `metamorphic-crypto`
+  the single source of truth for primitives.
+- This is **not** a general-purpose signing API. For Metamorphic authenticity,
+  keep using the hybrid PQ composite [`sign`] / [`verify`]. Verification uses
+  `verify_strict` (rejects non-canonical / small-order keys) while remaining
+  interoperable with honestly generated witness signatures.
+- Locked against RFC 8032 §7.1 known-answer vectors (Test 1 + Test 2).
+- No new dependencies (`ed25519-dalek` was already in-tree); no wire-format or
+  public-API changes to any existing function.
+
 ## v0.7.1 (2026-06-25)
 
 Docs + dependency/CI maintenance. **No functional or wire-format changes** — the
