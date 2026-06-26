@@ -7,7 +7,7 @@ If you discover a security vulnerability in this crate, **do not open a public i
 Please report it privately via one of:
 
 - **GitHub Security Advisories**: [Report a vulnerability](https://github.com/moss-piglet/metamorphic-crypto/security/advisories/new)
-- **Email**: security@metamorphic.app
+- **Email**: security@mosspiglet.dev
 
 We will acknowledge receipt within 48 hours and provide a timeline for a fix.
 
@@ -23,7 +23,7 @@ This policy covers the `metamorphic-crypto` Rust crate, including:
 ## Supported Versions
 
 | Version | Supported |
-|---------|-----------|
+| ------- | --------- |
 | 0.3.x   | Yes       |
 | < 0.3   | No        |
 
