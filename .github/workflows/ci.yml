@@ -52,7 +52,11 @@ jobs:
       # rustsec/audit-check action, whose bundled installer currently fails on
       # the GitHub runners (exit 101 on `cargo install`).
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        # Disable HTTP/2 multiplexing + retry: crates.io downloads intermittently
+        # fail with "Error in the HTTP2 framing layer" on the runners.
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+        run: cargo install cargo-audit --locked || cargo install cargo-audit --locked
 
       - name: Audit dependencies
         run: cargo audit
