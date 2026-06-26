@@ -24,8 +24,8 @@ This policy covers the `metamorphic-crypto` Rust crate, including:
 
 | Version | Supported |
 | ------- | --------- |
-| 0.3.x   | Yes       |
-| < 0.3   | No        |
+| 0.8.x   | Yes       |
+| < 0.8   | No        |
 
 ## Security Design
 
