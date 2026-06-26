@@ -346,6 +346,54 @@ fn level_from_tag(tag: Option<&u8>) -> Result<SignatureLevel, CryptoError> {
     }
 }
 
+/// Map a leading version-tag byte to its `(Suite, SignatureLevel)` posture.
+///
+/// This is the single source of truth for the tag → posture mapping shared by
+/// [`signature_posture`] and [`signature_posture_from_signature`]. It never
+/// exposes the raw tag; the tag stays a private wire detail and only its
+/// *meaning* is surfaced. Returns `None` for an unknown tag.
+///
+/// Note: the Cat-2 hybrid tag (`0x01`) is byte-identical for `Suite::Hybrid`
+/// and `Suite::HybridMatched` (the latter delegates to the former at Cat-2), so
+/// it canonically decodes to `(Suite::Hybrid, SignatureLevel::Cat2)`.
+fn posture_from_tag(tag: u8) -> Option<(Suite, SignatureLevel)> {
+    match tag {
+        VERSION_CAT2 => Some((Suite::Hybrid, SignatureLevel::Cat2)),
+        VERSION_CAT3 => Some((Suite::Hybrid, SignatureLevel::Cat3)),
+        VERSION_CAT5 => Some((Suite::Hybrid, SignatureLevel::Cat5)),
+        VERSION_SIG_PURE_CNSA2 => Some((Suite::PureCnsa2, SignatureLevel::Cat5)),
+        VERSION_SIG_MATCHED_CAT3 => Some((Suite::HybridMatched, SignatureLevel::Cat3)),
+        VERSION_SIG_MATCHED_CAT5 => Some((Suite::HybridMatched, SignatureLevel::Cat5)),
+        _ => None,
+    }
+}
+
+/// Expected full public-key blob length (including the 1-byte tag) for `tag`.
+fn expected_public_key_len(tag: u8) -> Option<usize> {
+    match tag {
+        VERSION_CAT2 => Some(1 + ED25519_PK_LEN + MLDSA44_PK_LEN),
+        VERSION_CAT3 => Some(1 + ED25519_PK_LEN + MLDSA65_PK_LEN),
+        VERSION_CAT5 => Some(1 + ED25519_PK_LEN + MLDSA87_PK_LEN),
+        VERSION_SIG_PURE_CNSA2 => Some(1 + MLDSA87_PK_LEN),
+        VERSION_SIG_MATCHED_CAT3 => Some(1 + ED448_PK_LEN + MLDSA65_PK_LEN),
+        VERSION_SIG_MATCHED_CAT5 => Some(1 + P521_PK_LEN + MLDSA87_PK_LEN),
+        _ => None,
+    }
+}
+
+/// Expected full signature blob length (including the 1-byte tag) for `tag`.
+fn expected_signature_len(tag: u8) -> Option<usize> {
+    match tag {
+        VERSION_CAT2 => Some(1 + ED25519_SIG_LEN + MLDSA44_SIG_LEN),
+        VERSION_CAT3 => Some(1 + ED25519_SIG_LEN + MLDSA65_SIG_LEN),
+        VERSION_CAT5 => Some(1 + ED25519_SIG_LEN + MLDSA87_SIG_LEN),
+        VERSION_SIG_PURE_CNSA2 => Some(1 + MLDSA87_SIG_LEN),
+        VERSION_SIG_MATCHED_CAT3 => Some(1 + ED448_SIG_LEN + MLDSA65_SIG_LEN),
+        VERSION_SIG_MATCHED_CAT5 => Some(1 + P521_SIG_LEN + MLDSA87_SIG_LEN),
+        _ => None,
+    }
+}
+
 /// Derive the ML-DSA public key bytes from a 32-byte seed.
 fn mldsa_public_key<P: MlDsaParams>(seed: &B32) -> Vec<u8> {
     let vk = SigningKey::<P>::from_seed(seed).verifying_key().encode();
@@ -744,6 +792,120 @@ pub fn verify(
 
     // Strict AND: both component signatures must verify.
     Ok(ed_ok && ml_ok)
+}
+
+// === Public API: posture introspection ===
+
+/// Report the `(Suite, SignatureLevel)` posture declared by a base64 hybrid
+/// **public key**, without exposing the raw wire tag.
+///
+/// Composite artifacts produced by this crate are *self-describing*: their
+/// leading version tag encodes which suite and security level produced them.
+/// This is the typed, opaque decode half of that contract — it lets any
+/// verifier (Rust core, WASM, NIF) learn the posture of a key it was handed and
+/// check it against an independently declared expectation (a "declared ==
+/// observed" check), without re-deriving the private wire tags itself.
+///
+/// The full decoded blob length is validated against the expected length for
+/// the decoded posture (mirroring [`verify`]'s length checks), so a truncated,
+/// over-long, or otherwise malformed key is rejected with a [`CryptoError`]
+/// rather than silently misreporting a posture. An unknown or missing leading
+/// tag, or a base64 decode failure, is likewise a [`CryptoError`].
+///
+/// This is purely read-only: it touches no secret material, allocates no
+/// secrets, and never panics on malformed input.
+///
+/// # Cat-2 aliasing
+///
+/// `Suite::Hybrid` and `Suite::HybridMatched` are byte-identical at Cat-2 (both
+/// tag `0x01`, since `HybridMatched` delegates to `Hybrid` at the lowest shared
+/// rung), so a Cat-2 key canonically decodes to
+/// `(Suite::Hybrid, SignatureLevel::Cat2)`.
+///
+/// # Honest framing
+///
+/// This reports the *declared format posture* read from the artifact's tag and
+/// validated for length. It is **not itself a cryptographic guarantee** that a
+/// signature verifies, nor a FIPS-validation claim — pair it with [`verify`]
+/// for authenticity.
+///
+/// # Example
+///
+/// ```
+/// use metamorphic_crypto::{
+///     generate_signing_keypair_suite, signature_posture, SignatureLevel, Suite,
+/// };
+///
+/// let kp = generate_signing_keypair_suite(Suite::PureCnsa2, SignatureLevel::Cat5).unwrap();
+/// assert_eq!(
+///     signature_posture(&kp.public_key).unwrap(),
+///     (Suite::PureCnsa2, SignatureLevel::Cat5)
+/// );
+/// ```
+pub fn signature_posture(public_key_b64: &str) -> Result<(Suite, SignatureLevel), CryptoError> {
+    let pk = b64::decode(public_key_b64)?;
+    let tag = pk
+        .first()
+        .copied()
+        .ok_or_else(|| CryptoError::Signature("unknown or missing signature version tag".into()))?;
+    let posture = posture_from_tag(tag)
+        .ok_or_else(|| CryptoError::Signature("unknown or missing signature version tag".into()))?;
+    let expected =
+        expected_public_key_len(tag).expect("known tag always has an expected public-key length");
+    if pk.len() != expected {
+        return Err(CryptoError::InvalidLength {
+            expected,
+            got: pk.len(),
+        });
+    }
+    Ok(posture)
+}
+
+/// Report the `(Suite, SignatureLevel)` posture declared by a base64 composite
+/// **signature**, without exposing the raw wire tag.
+///
+/// The signature counterpart to [`signature_posture`]; see that function for
+/// the self-describing-artifact contract, the Cat-2 aliasing note
+/// (`0x01` → `(Suite::Hybrid, SignatureLevel::Cat2)`), and the honest framing
+/// (declared posture, not a verification result). The full decoded blob length
+/// is validated against the expected signature length for the decoded posture,
+/// so a truncated/garbage/wrong-length signature is rejected with a
+/// [`CryptoError`] rather than misreported. Read-only; no secrets; no panics.
+///
+/// # Example
+///
+/// ```
+/// use metamorphic_crypto::{
+///     generate_signing_keypair_suite, sign, signature_posture_from_signature,
+///     SignatureLevel, Suite, SIGN_CONTEXT_V1,
+/// };
+///
+/// let kp = generate_signing_keypair_suite(Suite::Hybrid, SignatureLevel::Cat3).unwrap();
+/// let sig = sign(b"checkpoint", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+/// assert_eq!(
+///     signature_posture_from_signature(&sig).unwrap(),
+///     (Suite::Hybrid, SignatureLevel::Cat3)
+/// );
+/// ```
+pub fn signature_posture_from_signature(
+    signature_b64: &str,
+) -> Result<(Suite, SignatureLevel), CryptoError> {
+    let sig = b64::decode(signature_b64)?;
+    let tag = sig
+        .first()
+        .copied()
+        .ok_or_else(|| CryptoError::Signature("unknown or missing signature version tag".into()))?;
+    let posture = posture_from_tag(tag)
+        .ok_or_else(|| CryptoError::Signature("unknown or missing signature version tag".into()))?;
+    let expected =
+        expected_signature_len(tag).expect("known tag always has an expected signature length");
+    if sig.len() != expected {
+        return Err(CryptoError::InvalidLength {
+            expected,
+            got: sig.len(),
+        });
+    }
+    Ok(posture)
 }
 
 // === CNSA 2.0 suites: sign / verify / derive ===
@@ -1332,5 +1494,94 @@ mod tests {
         assert!(!verify(b"m", SIGN_CONTEXT_V1, &sig_pure, &legacy.public_key).unwrap());
         let sig_legacy = sign(b"m", SIGN_CONTEXT_V1, &legacy.secret_key).unwrap();
         assert!(!verify(b"m", SIGN_CONTEXT_V1, &sig_legacy, &pure.public_key).unwrap());
+    }
+
+    // === Posture introspection (v0.8.1) ===
+
+    /// All six postures: a freshly generated key and a fresh signature both
+    /// decode to the expected `(Suite, SignatureLevel)`, and the public-key and
+    /// signature postures agree for the same keypair. Per the Cat-2 aliasing
+    /// rule, `HybridMatched`/Cat-2 is observed as `(Hybrid, Cat2)`.
+    #[test]
+    fn posture_all_six_and_pk_sig_agree() {
+        let cases = [
+            (Suite::Hybrid, SignatureLevel::Cat2, Suite::Hybrid),
+            (Suite::Hybrid, SignatureLevel::Cat3, Suite::Hybrid),
+            (Suite::Hybrid, SignatureLevel::Cat5, Suite::Hybrid),
+            (Suite::PureCnsa2, SignatureLevel::Cat5, Suite::PureCnsa2),
+            (
+                Suite::HybridMatched,
+                SignatureLevel::Cat3,
+                Suite::HybridMatched,
+            ),
+            (
+                Suite::HybridMatched,
+                SignatureLevel::Cat5,
+                Suite::HybridMatched,
+            ),
+            // Cat-2 HybridMatched aliases to plain Hybrid (byte-identical, 0x01).
+            (Suite::HybridMatched, SignatureLevel::Cat2, Suite::Hybrid),
+        ];
+        for (suite, level, observed_suite) in cases {
+            let kp = generate_signing_keypair_suite(suite, level).unwrap();
+            assert_eq!(
+                signature_posture(&kp.public_key).unwrap(),
+                (observed_suite, level),
+                "public-key posture for {suite:?}/{level:?}"
+            );
+            let sig = sign(b"checkpoint", SIGN_CONTEXT_V1, &kp.secret_key).unwrap();
+            assert_eq!(
+                signature_posture_from_signature(&sig).unwrap(),
+                (observed_suite, level),
+                "signature posture for {suite:?}/{level:?}"
+            );
+            // Public-key and signature postures must agree.
+            assert_eq!(
+                signature_posture(&kp.public_key).unwrap(),
+                signature_posture_from_signature(&sig).unwrap(),
+                "pk/sig posture agreement for {suite:?}/{level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn posture_invalid_base64_errors() {
+        assert!(signature_posture("not!base64!").is_err());
+        assert!(signature_posture_from_signature("also!bad!").is_err());
+    }
+
+    #[test]
+    fn posture_empty_input_errors() {
+        let empty = b64::encode(&[]);
+        assert!(signature_posture(&empty).is_err());
+        assert!(signature_posture_from_signature(&empty).is_err());
+    }
+
+    #[test]
+    fn posture_unknown_tag_errors() {
+        // 0x7f is not a known suite/level tag.
+        let blob = b64::encode(&[0x7fu8; 128]);
+        assert!(signature_posture(&blob).is_err());
+        assert!(signature_posture_from_signature(&blob).is_err());
+    }
+
+    /// A blob with a correct leading tag but a short body must error (length
+    /// validation) rather than misreport a posture.
+    #[test]
+    fn posture_truncated_blob_errors() {
+        let kp = generate_signing_keypair_with_level(SignatureLevel::Cat3);
+        let mut pk = b64::decode(&kp.public_key).unwrap();
+        pk.truncate(pk.len() - 1);
+        assert!(signature_posture(&b64::encode(&pk)).is_err());
+
+        let sig = b64::decode(&sign(b"m", SIGN_CONTEXT_V1, &kp.secret_key).unwrap()).unwrap();
+        let mut short = sig.clone();
+        short.truncate(short.len() - 1);
+        assert!(signature_posture_from_signature(&b64::encode(&short)).is_err());
+
+        // Over-long (correct tag, extra trailing byte) is also rejected.
+        let mut long = sig;
+        long.push(0u8);
+        assert!(signature_posture_from_signature(&b64::encode(&long)).is_err());
     }
 }

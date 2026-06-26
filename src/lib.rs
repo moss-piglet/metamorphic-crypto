@@ -111,7 +111,8 @@ pub use secretbox::{
 pub use sign::{
     HybridSignatureKeyPair, SIGN_CONTEXT_V1, SignatureLevel, derive_public_key,
     generate_signing_keypair, generate_signing_keypair_44, generate_signing_keypair_87,
-    generate_signing_keypair_suite, generate_signing_keypair_with_level, sign, verify,
+    generate_signing_keypair_suite, generate_signing_keypair_with_level, sign, signature_posture,
+    signature_posture_from_signature, verify,
 };
 pub use suite::{SEAL_CONTEXT_V1, Suite};
 pub use vrf::{
