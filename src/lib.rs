@@ -46,6 +46,13 @@
 //! | HybridMatched (Cat-3) | `0x13 \|\| ed448_sig (114B) \|\| ml_dsa65_sig` | `0x13 \|\| ed448_pk (57B) \|\| ml_dsa65_pk` | `0x13 \|\| ed448_seed (57B) \|\| ml_dsa_seed (32B)` |
 //! | HybridMatched (Cat-5) | `0x14 \|\| ecdsa_p521_sig (132B) \|\| ml_dsa87_sig` | `0x14 \|\| p521_pk (133B) \|\| ml_dsa87_pk` | `0x14 \|\| p521_seed (66B) \|\| ml_dsa_seed (32B)` |
 //! | PureCnsa2 (Cat-5) | `0x10 \|\| ml_dsa87_sig` | `0x10 \|\| ml_dsa87_pk` | `0x10 \|\| ml_dsa_seed (32B)` |
+//!
+//! Separately, the [`ed25519`] module exposes **bare RFC 8032 Ed25519**
+//! (sign/verify, no framing, no PQ component). It exists *only* for byte-level
+//! interoperability with the deployed C2SP transparency-log witness ecosystem
+//! (Go `sumdb/note`, sigsum, transparency-dev, Tessera), which co-signs
+//! checkpoints with raw Ed25519. It is **not** a general-purpose signing API —
+//! use the hybrid PQ [`sign`] for Metamorphic authenticity.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -53,6 +60,7 @@
 pub mod b64;
 pub mod box_seal;
 mod ecc;
+pub mod ed25519;
 pub mod error;
 pub mod hash;
 pub mod hybrid;
@@ -72,6 +80,10 @@ pub use error::CryptoError;
 // Re-export the primary public API
 pub use b64::parse_salt_from_key_hash;
 pub use box_seal::{box_seal, box_seal_open};
+pub use ed25519::{
+    ED25519_PUBLIC_KEY_LEN, ED25519_SEED_LEN, ED25519_SIGNATURE_LEN, ed25519_generate_keypair,
+    ed25519_public_key, ed25519_sign, ed25519_verify,
+};
 pub use hash::{sha3_256, sha3_512, sha3_512_with_context, sha256, sha512};
 pub use hybrid::{
     HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_512,
