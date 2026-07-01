@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.10.0 (2026-06-30)
+
+Adds a single, **additive** primitive: standalone HKDF-SHA512 (RFC 5869).
+Fully non-breaking — no existing wire format, function, default, or export
+changes, only a new module, a new WASM export, and their re-exports.
+
+### New `hkdf` module — HKDF-SHA512 (RFC 5869)
+
+- New public module `hkdf` exposing
+  `hkdf_sha512(salt, ikm, info, length) -> Result<Vec<u8>, CryptoError>` (one
+  call performs Extract-then-Expand) and the `HASH_LEN` (64) constant.
+  Re-exported at the crate root as `hkdf_sha512` / `HKDF_SHA512_HASH_LEN`;
+  exposed to WASM as `hkdfSha512(saltB64, ikmB64, info, length)` (base64 in/out,
+  `info` a UTF-8 context label).
+- Thin wrapper over the audited RustCrypto `hkdf` crate (the `Hkdf::<Sha512>`
+  already used internally by the hybrid-seal envelope, `suite::derive_aes256_key`).
+  No novel cryptography — this promotes the existing internal HKDF-SHA512 to a
+  public, cross-language primitive.
+- **Salt semantics:** an empty `salt` means "not provided" (RFC 5869 §2.2), i.e.
+  `HashLen` zero bytes; `info` is the domain-separation label bound into Expand.
+- **Purpose:** combining two secrets into one wrapping key with auditable domain
+  separation — specifically Mosslet's WebAuthn-PRF device-bound `user_key` wrap
+  (board #362):
+  `HKDF-SHA512(salt = wrap_salt, ikm = password_key ‖ prf_output, info = "mosslet/user_key-wrap/v1", len = 32)`.
+  The combine runs only in the browser (the server never sees the inputs); the
+  server NIF exists for parity and general use.
+- Validated against the **RFC 5869 Test Case 1 inputs recomputed with SHA-512**
+  (`tests/interop_vectors.rs::hkdf_sha512_base64_io_vector`), byte-identical to
+  `@noble/hashes` / WebCrypto HKDF-SHA-512, plus determinism, domain-separation,
+  salt-None, and output-length property tests.
+- New native crate dependency surface only; `:hybrid` and all wire formats are
+  unchanged.
+
 ## v0.9.0 (2026-06-30)
 
 Adds two new, **additive** primitives that complete on-spec support for the IETF

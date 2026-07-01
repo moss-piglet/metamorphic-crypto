@@ -38,6 +38,11 @@ pub enum CryptoError {
     #[error("key derivation failed: {0}")]
     Kdf(String),
 
+    /// An HKDF (RFC 5869) extract/expand operation failed — in practice only
+    /// when the requested output length exceeds `255 * HashLen`.
+    #[error("hkdf: {0}")]
+    Hkdf(String),
+
     /// An error in the hybrid PQ KEM layer.
     #[error("hybrid KEM: {0}")]
     Hybrid(String),

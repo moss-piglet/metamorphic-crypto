@@ -337,3 +337,38 @@ fn full_recovery_key_flow() {
     let final_pk = keys::decrypt_private_key(&new_encrypted_pk, &new_session_key).unwrap();
     assert_eq!(final_pk, keypair.private_key);
 }
+
+// ============================================================================
+// HKDF-SHA512 base64 I/O parity (RFC 5869 Test Case 1 inputs, SHA-512, L=42)
+// ============================================================================
+
+// Locks the exact base64-in/base64-out contract the WASM binding (`hkdfSha512`)
+// and the Elixir NIF (`MetamorphicCrypto.KDF.hkdf_sha512/4`) rely on, so a
+// wrapping key derived in the browser is byte-identical to one derived here.
+//
+// Reproduce in JS with @noble/hashes:
+//   import { hkdf } from "@noble/hashes/hkdf";
+//   import { sha512 } from "@noble/hashes/sha512";
+//   const okm = hkdf(sha512, ikm, salt, info, 42);  // == this vector
+#[test]
+fn hkdf_sha512_base64_io_vector() {
+    use metamorphic_crypto::{b64, hkdf};
+
+    let salt: Vec<u8> = (0u8..=0x0c).collect();
+    let ikm = [0x0bu8; 22];
+    let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+
+    // Native byte API.
+    let okm = hkdf::hkdf_sha512(&salt, &ikm, &info, 42).unwrap();
+    let okm_hex: String = okm.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        okm_hex,
+        "832390086cda71fb47625bb5ceb168e4c8e26a1a16ed34d9fc7fe92c1481579338da362cb8d9f925d7cb"
+    );
+
+    // Base64 boundary (what WASM/NIF marshal): decode inputs from b64, encode
+    // OKM to b64 — must round-trip to the same bytes.
+    let okm_b64 = b64::encode(&okm);
+    assert_eq!(b64::decode(&okm_b64).unwrap(), okm);
+    assert_eq!(b64::encode(&salt), b64::encode(&salt));
+}

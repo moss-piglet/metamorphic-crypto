@@ -63,6 +63,7 @@ mod ecc;
 pub mod ed25519;
 pub mod error;
 pub mod hash;
+pub mod hkdf;
 pub mod hybrid;
 pub mod kdf;
 pub mod keys;
@@ -88,6 +89,7 @@ pub use ed25519::{
     ed25519_public_key, ed25519_sign, ed25519_verify,
 };
 pub use hash::{sha3_256, sha3_512, sha3_512_with_context, sha256, sha512};
+pub use hkdf::{HASH_LEN as HKDF_SHA512_HASH_LEN, hkdf_sha512};
 pub use hybrid::{
     HybridKeyPair, SecurityLevel, generate_hybrid_keypair, generate_hybrid_keypair_512,
     generate_hybrid_keypair_1024, generate_hybrid_keypair_suite,

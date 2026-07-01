@@ -18,6 +18,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **CNSA 2.0 suite axis** (opt-in) — matched-strength hybrid (X448 / P-521 / Ed448 / ECDSA-P-521) and pure post-quantum (ML-KEM-1024, ML-DSA-87, AES-256-GCM)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
 - **HMAC-SHA256** (RFC 2104) — keyed MAC primitive (e.g. the on-spec KEYTRANS commitment)
+- **HKDF-SHA512** (RFC 5869) — extract-then-expand KDF for combining/diversifying secret key material
 - **Verifiable random functions** (ECVRF, RFC 9381) — Edwards25519 (`0x03`) and NIST P-256 (`0x01`), classical VRFs for transparency-log *index privacy* (CONIKS / KEYTRANS)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
@@ -189,6 +190,50 @@ WASM: `hmacSha256(keyB64, msgB64) -> tagB64`.
 > is a fixed, public per-suite constant and hiding comes from a random opening in
 > the message — HMAC is used as a committing PRF, not a secret-keyed
 > authenticator. Use it in a construction whose properties you understand.
+
+## Key derivation from secrets (HKDF-SHA512, RFC 5869)
+
+For **password-based** derivation use Argon2id (`derive_session_key`). To
+**combine or diversify already-high-entropy secret key material** — deriving one
+key from two, or several subkeys from one — use HKDF-SHA512.
+
+`hkdf_sha512(salt, ikm, info, length)` performs RFC 5869 Extract-then-Expand in a
+single call over the same audited `Hkdf::<Sha512>` the hybrid-seal envelope
+already uses internally. No novel cryptography — it promotes that internal HKDF
+to a public, cross-language primitive.
+
+```rust
+use metamorphic_crypto::hkdf_sha512;
+
+// Combine two secrets into one 32-byte wrapping key with domain separation.
+let wrapping_key = hkdf_sha512(
+    wrap_salt,                          // salt  → Extract (non-secret)
+    &[password_key, prf_output].concat(), // ikm → Extract (secret)
+    b"mosslet/user_key-wrap/v1",        // info → Expand (domain separation)
+    32,                                 // output length in bytes
+)?;
+```
+
+- **`salt`** is bound into Extract; an **empty** salt means "not provided"
+  (RFC 5869 §2.2 — `HashLen` zero bytes). Prefer a per-derivation salt.
+- **`info`** is the versioned domain-separation label, bound into Expand — the
+  *correct* place for context (not Extract).
+- **`length`** must be `<= 255 * 64 = 16320` bytes; otherwise `CryptoError::Hkdf`.
+
+Its headline use is Mosslet's WebAuthn-PRF device-bound `user_key` wrap
+(board #362): one wrapping key derived from the password-derived key **and** an
+authenticator's PRF output, so a stolen password alone cannot unlock. The
+combine runs entirely in the browser (the server never sees the inputs); the
+NIF/native functions exist for parity and general use.
+
+Byte-identical across native Rust, WASM, and the Elixir NIF — and to
+`@noble/hashes` / WebCrypto HKDF-SHA-512 — pinned by the RFC 5869 SHA-512 vector.
+WASM: `hkdfSha512(saltB64, ikmB64, info, length) -> okmB64` (`info` a UTF-8
+label).
+
+> **Secrets welcome here.** Unlike the bare hashes above, HKDF is the right
+> construction for secret input keying material. Do **not** reach for a plain
+> hash to combine secrets — use this.
 
 ## Verifiable random functions (ECVRF, RFC 9381)
 
@@ -475,6 +520,7 @@ Base64 in/out throughout. VRF `verify` returns the base64 output on success or
 ```js
 import init, {
   hmacSha256,
+  hkdfSha512,
   ecvrfEd25519GenerateKeyPair, ecvrfEd25519Prove, ecvrfEd25519Verify,
   ecvrfP256GenerateKeyPair, ecvrfP256Prove, ecvrfP256Verify,
 } from './pkg/metamorphic_crypto.js';
@@ -482,6 +528,10 @@ await init();
 
 // HMAC-SHA256
 const tag = hmacSha256(btoa("key bytes"), btoa("message")); // base64 tag
+
+// HKDF-SHA512 (RFC 5869) — combine two secrets into one 32-byte key.
+// info is a UTF-8 domain-separation label; empty salt ⇒ "not provided".
+const wrappingKey = hkdfSha512(wrapSaltB64, ikmB64, "mosslet/user_key-wrap/v1", 32);
 
 // ECVRF-Edwards25519 (suite 0x03)
 const ed = ecvrfEd25519GenerateKeyPair();     // { secretKey, publicKey }
