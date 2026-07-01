@@ -10,7 +10,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::hybrid::SecurityLevel;
 use crate::suite::Suite;
-use crate::{b64, box_seal, hash, hybrid, kdf, keys, recovery, seal, secretbox, sign};
+use crate::{
+    b64, box_seal, hash, hybrid, kdf, keys, mac, recovery, seal, secretbox, sign, vrf, vrf_p256,
+};
 // ---------------------------------------------------------------------------
 // Key derivation
 // ---------------------------------------------------------------------------
@@ -481,9 +483,142 @@ pub fn verify(
 }
 
 // ---------------------------------------------------------------------------
+// MAC (HMAC-SHA256)
+// ---------------------------------------------------------------------------
+//
+// The generic keyed-MAC primitive. Its headline use is the on-spec IETF
+// KEYTRANS commitment (`HMAC(Kc, CommitmentValue)`); the KEYTRANS-specific
+// framing lives in the transparency-log layer, not here. `key`/`msg` are
+// base64; the 32-byte tag is returned as base64.
+
+/// HMAC-SHA256 of base64 `msg` under base64 `key`. Returns the 32-byte tag as
+/// base64. Any key length is accepted (RFC 2104).
+#[wasm_bindgen(js_name = "hmacSha256")]
+pub fn hmac_sha256(key_b64: &str, msg_b64: &str) -> Result<String, JsValue> {
+    let key = b64::decode(key_b64).map_err(to_js)?;
+    let msg = b64::decode(msg_b64).map_err(to_js)?;
+    Ok(b64::encode(&mac::hmac_sha256(&key, &msg)))
+}
+
+// ---------------------------------------------------------------------------
+// Verifiable Random Functions (ECVRF, RFC 9381)
+// ---------------------------------------------------------------------------
+//
+// Two RFC 9381 ciphersuites, mirroring the native API exactly:
+//   * `ecvrfEd25519*` — ECVRF-EDWARDS25519-SHA512-TAI (suite 0x03)
+//   * `ecvrfP256*`    — ECVRF-P256-SHA256-TAI          (suite 0x01)
+// They back the KEYTRANS index-privacy VRF (Ed25519 for the private/experimental
+// and `KT_128_SHA256_Ed25519` suites; P-256 for `KT_128_SHA256_P256`). Keys,
+// proofs, inputs (`alpha`), and outputs cross as base64. `verify` returns the
+// base64 output on success or `undefined` (JS `null`) on a cryptographic reject.
+
+/// Generate an ECVRF-Edwards25519 keypair. Returns JSON: `{ secretKey, publicKey }`.
+#[wasm_bindgen(js_name = "ecvrfEd25519GenerateKeyPair")]
+pub fn ecvrf_ed25519_generate_keypair() -> JsValue {
+    let (sk, pk) = vrf::ecvrf_generate_keypair();
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &b64::encode(&sk).into()).unwrap();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &b64::encode(&pk).into()).unwrap();
+    obj.into()
+}
+
+/// Derive the base64 ECVRF-Edwards25519 public key from a base64 secret key.
+#[wasm_bindgen(js_name = "ecvrfEd25519PublicKey")]
+pub fn ecvrf_ed25519_public_key(secret_key_b64: &str) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    Ok(b64::encode(&vrf::ecvrf_public_key(&sk).map_err(to_js)?))
+}
+
+/// Produce an ECVRF-Edwards25519 proof (base64) for base64 `alpha`.
+#[wasm_bindgen(js_name = "ecvrfEd25519Prove")]
+pub fn ecvrf_ed25519_prove(secret_key_b64: &str, alpha_b64: &str) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    let alpha = b64::decode(alpha_b64).map_err(to_js)?;
+    Ok(b64::encode(&vrf::ecvrf_prove(&sk, &alpha).map_err(to_js)?))
+}
+
+/// Verify an ECVRF-Edwards25519 proof. Returns the base64 output on success, or
+/// `null` on a cryptographic rejection.
+#[wasm_bindgen(js_name = "ecvrfEd25519Verify")]
+pub fn ecvrf_ed25519_verify(
+    public_key_b64: &str,
+    alpha_b64: &str,
+    proof_b64: &str,
+) -> Result<Option<String>, JsValue> {
+    let pk = b64::decode(public_key_b64).map_err(to_js)?;
+    let alpha = b64::decode(alpha_b64).map_err(to_js)?;
+    let proof = b64::decode(proof_b64).map_err(to_js)?;
+    Ok(vrf::ecvrf_verify(&pk, &alpha, &proof)
+        .map_err(to_js)?
+        .map(|beta| b64::encode(&beta)))
+}
+
+/// Recover the base64 ECVRF-Edwards25519 output from a proof, without verifying.
+#[wasm_bindgen(js_name = "ecvrfEd25519ProofToHash")]
+pub fn ecvrf_ed25519_proof_to_hash(proof_b64: &str) -> Result<String, JsValue> {
+    let proof = b64::decode(proof_b64).map_err(to_js)?;
+    Ok(b64::encode(
+        &vrf::ecvrf_proof_to_hash(&proof).map_err(to_js)?,
+    ))
+}
+
+/// Generate an ECVRF-P256 keypair. Returns JSON: `{ secretKey, publicKey }`.
+#[wasm_bindgen(js_name = "ecvrfP256GenerateKeyPair")]
+pub fn ecvrf_p256_generate_keypair() -> JsValue {
+    let (sk, pk) = vrf_p256::ecvrf_p256_generate_keypair();
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &b64::encode(&sk).into()).unwrap();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &b64::encode(&pk).into()).unwrap();
+    obj.into()
+}
+
+/// Derive the base64 ECVRF-P256 public key from a base64 secret key.
+#[wasm_bindgen(js_name = "ecvrfP256PublicKey")]
+pub fn ecvrf_p256_public_key(secret_key_b64: &str) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    Ok(b64::encode(
+        &vrf_p256::ecvrf_p256_public_key(&sk).map_err(to_js)?,
+    ))
+}
+
+/// Produce an ECVRF-P256 proof (base64) for base64 `alpha`.
+#[wasm_bindgen(js_name = "ecvrfP256Prove")]
+pub fn ecvrf_p256_prove(secret_key_b64: &str, alpha_b64: &str) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    let alpha = b64::decode(alpha_b64).map_err(to_js)?;
+    Ok(b64::encode(
+        &vrf_p256::ecvrf_p256_prove(&sk, &alpha).map_err(to_js)?,
+    ))
+}
+
+/// Verify an ECVRF-P256 proof. Returns the base64 output on success, or `null`
+/// on a cryptographic rejection.
+#[wasm_bindgen(js_name = "ecvrfP256Verify")]
+pub fn ecvrf_p256_verify(
+    public_key_b64: &str,
+    alpha_b64: &str,
+    proof_b64: &str,
+) -> Result<Option<String>, JsValue> {
+    let pk = b64::decode(public_key_b64).map_err(to_js)?;
+    let alpha = b64::decode(alpha_b64).map_err(to_js)?;
+    let proof = b64::decode(proof_b64).map_err(to_js)?;
+    Ok(vrf_p256::ecvrf_p256_verify(&pk, &alpha, &proof)
+        .map_err(to_js)?
+        .map(|beta| b64::encode(&beta)))
+}
+
+/// Recover the base64 ECVRF-P256 output from a proof, without verifying.
+#[wasm_bindgen(js_name = "ecvrfP256ProofToHash")]
+pub fn ecvrf_p256_proof_to_hash(proof_b64: &str) -> Result<String, JsValue> {
+    let proof = b64::decode(proof_b64).map_err(to_js)?;
+    Ok(b64::encode(
+        &vrf_p256::ecvrf_p256_proof_to_hash(&proof).map_err(to_js)?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
 /// Parse a JS string into a `SecurityLevel`.
 ///
 /// Accepts `"cat1"`, `"cat3"`, `"cat5"` (case-insensitive). Defaults to Cat-3 on empty/null.
