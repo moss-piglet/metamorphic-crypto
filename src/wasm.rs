@@ -11,7 +11,8 @@ use wasm_bindgen::prelude::*;
 use crate::hybrid::SecurityLevel;
 use crate::suite::Suite;
 use crate::{
-    b64, box_seal, hash, hybrid, kdf, keys, mac, recovery, seal, secretbox, sign, vrf, vrf_p256,
+    b64, box_seal, hash, hkdf, hybrid, kdf, keys, mac, recovery, seal, secretbox, sign, vrf,
+    vrf_p256,
 };
 // ---------------------------------------------------------------------------
 // Key derivation
@@ -387,6 +388,30 @@ pub fn sha3_512(data_b64: &str) -> Result<String, JsValue> {
 pub fn sha3_512_with_context(context: &str, data_b64: &str) -> Result<String, JsValue> {
     let data = b64::decode(data_b64).map_err(to_js)?;
     Ok(b64::encode(&hash::sha3_512_with_context(context, &data)))
+}
+
+/// HKDF-SHA512 (RFC 5869) extract-then-expand over base64-encoded inputs.
+///
+/// Derives `length` bytes of output keying material and returns it as base64.
+/// `salt_b64` and `ikm_b64` are base64; `info` is a UTF-8 context label (bound
+/// into Expand for domain separation). An empty `salt_b64` means "not provided"
+/// (HashLen zero bytes, RFC 5869 §2.2).
+///
+/// Byte-for-byte identical to `metamorphic_crypto::hkdf::hkdf_sha512` (native /
+/// Elixir NIF) and to `@noble/hashes` / WebCrypto HKDF-SHA-512 for the same
+/// inputs — the guarantee that a wrapping key derived in the browser matches
+/// one derived anywhere else.
+#[wasm_bindgen(js_name = "hkdfSha512")]
+pub fn hkdf_sha512(
+    salt_b64: &str,
+    ikm_b64: &str,
+    info: &str,
+    length: usize,
+) -> Result<String, JsValue> {
+    let salt = b64::decode(salt_b64).map_err(to_js)?;
+    let ikm = b64::decode(ikm_b64).map_err(to_js)?;
+    let okm = hkdf::hkdf_sha512(&salt, &ikm, info.as_bytes(), length).map_err(to_js)?;
+    Ok(b64::encode(&okm))
 }
 
 /// SHA3-256 digest of base64-encoded `data`. Returns the 32-byte digest as base64.
