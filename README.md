@@ -17,7 +17,8 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ signatures** (ML-DSA + Ed25519) — NIST Cat-2/3/5 composite digital signatures (strict AND)
 - **CNSA 2.0 suite axis** (opt-in) — matched-strength hybrid (X448 / P-521 / Ed448 / ECDSA-P-521) and pure post-quantum (ML-KEM-1024, ML-DSA-87, AES-256-GCM)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
-- **Verifiable random function** (ECVRF-EDWARDS25519-SHA512-TAI, RFC 9381) — classical VRF for transparency-log *index privacy* (CONIKS-style)
+- **HMAC-SHA256** (RFC 2104) — keyed MAC primitive (e.g. the on-spec KEYTRANS commitment)
+- **Verifiable random functions** (ECVRF, RFC 9381) — Edwards25519 (`0x03`) and NIST P-256 (`0x01`), classical VRFs for transparency-log *index privacy* (CONIKS / KEYTRANS)
 - **WASM bindings** — browser-ready via `wasm-pack`
 - **Recovery keys** — human-readable base32 encoding for key backup
 
@@ -167,51 +168,88 @@ would add cost without protection. If you need to process secret material
 Argon2id `derive_session_key` for password-based derivation, or a dedicated
 KDF/MAC. The encryption APIs that handle secrets already zeroize on drop.
 
-## Verifiable random function (ECVRF, RFC 9381)
+## Message authentication (HMAC-SHA256)
 
-The `vrf` module exposes **ECVRF-EDWARDS25519-SHA512-TAI** — RFC 9381 ciphersuite
-`0x03`: Edwards25519 + SHA-512 + the try-and-increment hash-to-curve. A VRF lets
-the key owner compute, for any input `alpha`, a pseudorandom output `beta` plus a
-proof `pi` that `beta` is correct under their public key. Anyone with the public
-key can verify `pi`, but cannot compute `beta` for a new input and cannot learn
-`alpha` from `(pi, beta)`. This is the primitive behind **transparency-log index
-privacy** (CONIKS-style): a directory maps a private identity index to a
-verifiable, pseudorandom tree position without revealing which identities it
-holds.
-
-It is built on the **same `curve25519-dalek` backend** as the Ed25519 interop
-module — no new curve stack — and is pinned byte-for-byte by RFC 9381's own test
-vectors.
+`hmac_sha256(key, msg)` is a thin wrapper over the audited RustCrypto `hmac`
+crate — the generic keyed-MAC primitive, no novel cryptography. Its headline use
+is the **on-spec IETF KEYTRANS commitment** (`HMAC(Kc, CommitmentValue)`); the
+KEYTRANS-specific framing lives in `metamorphic-log`, so this crate stays the
+single source of truth for primitives.
 
 ```rust
+use metamorphic_crypto::hmac_sha256;
+
+let tag: [u8; 32] = hmac_sha256(key_bytes, message_bytes);
+```
+
+Any key length is accepted (RFC 2104). Validated against RFC 4231 test vectors.
+WASM: `hmacSha256(keyB64, msgB64) -> tagB64`.
+
+> **Not an authenticator by default here.** In the KEYTRANS commitment the "key"
+> is a fixed, public per-suite constant and hiding comes from a random opening in
+> the message — HMAC is used as a committing PRF, not a secret-keyed
+> authenticator. Use it in a construction whose properties you understand.
+
+## Verifiable random functions (ECVRF, RFC 9381)
+
+The crate exposes **two** RFC 9381 ECVRF ciphersuites, sharing an identical
+prove/verify/proof-to-hash shape:
+
+| Module | Ciphersuite | Suite octet | Curve + hash | Used by |
+|--------|-------------|-------------|--------------|---------|
+| `vrf` | ECVRF-EDWARDS25519-SHA512-TAI | `0x03` | Edwards25519 + SHA-512 | KEYTRANS private/experimental + `KT_128_SHA256_Ed25519` |
+| `vrf_p256` | ECVRF-P256-SHA256-TAI | `0x01` | NIST P-256 + SHA-256 | on-spec `KT_128_SHA256_P256` |
+
+A VRF lets the key owner compute, for any input `alpha`, a pseudorandom output
+`beta` plus a proof `pi` that `beta` is correct under their public key. Anyone
+with the public key can verify `pi`, but cannot compute `beta` for a new input
+and cannot learn `alpha` from `(pi, beta)`. This is the primitive behind
+**transparency-log index privacy** (CONIKS / KEYTRANS): a directory maps a
+private identity index to a verifiable, pseudorandom tree position without
+revealing which identities it holds.
+
+Both are built on curve backends already in-tree (`curve25519-dalek` for
+Edwards25519; `p256` for P-256 — the same `elliptic-curve` generation as the
+crate's P-521 stack) — no parallel crypto — and are pinned byte-for-byte by
+RFC 9381's own test vectors.
+
+```rust
+// Edwards25519 (suite 0x03)
 use metamorphic_crypto::{ecvrf_generate_keypair, ecvrf_prove, ecvrf_verify};
 
 let (sk, pk) = ecvrf_generate_keypair();
 let alpha = b"identity index";
-
-let pi = ecvrf_prove(&sk, alpha)?;               // 80-byte proof
-let beta = ecvrf_verify(&pk, alpha, &pi)?;       // Ok(Some(beta)) if valid
+let pi = ecvrf_prove(&sk, alpha)?;         // 80-byte proof
+let beta = ecvrf_verify(&pk, alpha, &pi)?; // Ok(Some(beta)) if valid
 assert!(beta.is_some());
+
+// NIST P-256 (suite 0x01) — identical shape
+use metamorphic_crypto::{ecvrf_p256_generate_keypair, ecvrf_p256_prove, ecvrf_p256_verify};
+
+let (sk, pk) = ecvrf_p256_generate_keypair();
+let pi = ecvrf_p256_prove(&sk, alpha)?;         // 81-byte proof
+let beta = ecvrf_p256_verify(&pk, alpha, &pi)?; // Ok(Some(beta)) if valid
 ```
 
-| Item | Bytes | Layout |
-|------|-------|--------|
-| secret key | 32 | Ed25519-style seed |
-| public key | 32 | compressed Edwards `Y = x*B` |
-| proof `pi` | 80 | `Gamma(32) \|\| c(16) \|\| s(32)` |
-| output `beta` | 64 | `SHA-512(0x03 \|\| 0x03 \|\| cofactor*Gamma \|\| 0x00)` |
+| Item | Edwards25519 (`vrf`) | P-256 (`vrf_p256`) |
+|------|----------------------|--------------------|
+| secret key | 32 B (seed) | 32 B (big-endian scalar `x`) |
+| public key | 32 B (compressed Edwards `Y`) | 33 B (SEC1 compressed `Y`) |
+| proof `pi` | 80 B: `Gamma(32) \|\| c(16) \|\| s(32)` | 81 B: `Gamma(33) \|\| c(16) \|\| s(32)` |
+| output `beta` | 64 B (SHA-512) | 32 B (SHA-256) |
 
-**Honest posture.** This VRF is **classical** (elliptic-curve discrete log). It
-protects exactly one property — *index privacy* — and is the one non-post-quantum
-piece in the transparency stack; integrity, authenticity, confidentiality, and
-hash-based commitments are post-quantum independently of it. RFC 9381's sibling
-`ECVRF-EDWARDS25519-SHA512-ELL2` (`0x04`, constant-time Elligator2 hash-to-curve)
-is a designed-in future addition that lands when the released curve backend
-exposes a conformant hash-to-curve (curve25519-dalek 5.x); because the suite
-octet is bound into every hash, adding it is purely additive and never
-invalidates a `0x03` proof. A hybrid (post-quantum + classical) VRF is intended
-for when an audited lattice VRF exists; none does today, so it is not built.
-These primitives are not FIPS-validated.
+WASM: `ecvrfEd25519{GenerateKeyPair,PublicKey,Prove,Verify,ProofToHash}` and
+`ecvrfP256{...}` (base64 in/out; `verify` returns the output or `null`).
+
+**Honest posture.** Both VRFs are **classical** (elliptic-curve discrete log).
+They protect exactly one property — *index privacy* — and are the one
+non-post-quantum piece in the transparency stack; integrity, authenticity,
+confidentiality, and hash-based commitments are post-quantum independently of
+them. RFC 9381's Elligator2 / SSWU siblings are designed-in future additions
+that never invalidate a TAI proof (the suite octet is bound into every hash). A
+hybrid (post-quantum + classical) VRF is intended for when an audited lattice
+VRF exists; none does today, so it is not built. These primitives are not
+FIPS-validated.
 
 ## Hybrid PQ signatures
 
@@ -427,6 +465,34 @@ const kp = generateSigningKeyPair("cat3"); // { publicKey, secretKey }
 const msg = btoa("transparency log entry");
 const sig = sign(msg, "metamorphic/sign/v1", kp.secretKey);
 const ok = verify(msg, "metamorphic/sign/v1", sig, kp.publicKey); // true
+```
+
+### HMAC & VRF (WASM)
+
+Base64 in/out throughout. VRF `verify` returns the base64 output on success or
+`null` on a cryptographic rejection, mirroring the native `Option`.
+
+```js
+import init, {
+  hmacSha256,
+  ecvrfEd25519GenerateKeyPair, ecvrfEd25519Prove, ecvrfEd25519Verify,
+  ecvrfP256GenerateKeyPair, ecvrfP256Prove, ecvrfP256Verify,
+} from './pkg/metamorphic_crypto.js';
+await init();
+
+// HMAC-SHA256
+const tag = hmacSha256(btoa("key bytes"), btoa("message")); // base64 tag
+
+// ECVRF-Edwards25519 (suite 0x03)
+const ed = ecvrfEd25519GenerateKeyPair();     // { secretKey, publicKey }
+const alpha = btoa("identity index");
+const piEd = ecvrfEd25519Prove(ed.secretKey, alpha);
+const betaEd = ecvrfEd25519Verify(ed.publicKey, alpha, piEd); // base64 or null
+
+// ECVRF-P256 (suite 0x01) — identical shape
+const p = ecvrfP256GenerateKeyPair();
+const piP = ecvrfP256Prove(p.secretKey, alpha);
+const betaP = ecvrfP256Verify(p.publicKey, alpha, piP);       // base64 or null
 ```
 
 ### CNSA 2.0 suites (WASM)

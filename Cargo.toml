@@ -1,6 +1,6 @@
 [package]
 name = "metamorphic-crypto"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM + X25519) and an opt-in CNSA 2.0 suite axis (matched-strength hybrid + pure ML-KEM-1024 / ML-DSA-87 / AES-256-GCM)"
@@ -38,9 +38,21 @@ aes-gcm = "=0.11.0-rc.4"
 hkdf = "=0.13.0"
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
 p521 = { version = "=0.14.0-rc.14", default-features = false, features = ["alloc", "arithmetic", "ecdh", "ecdsa"] }
+# NIST P-256, pinned to the same RustCrypto elliptic-curve 0.14 generation as
+# p521. Used by the ECVRF-P256-SHA256-TAI VRF (RFC 9381) for the on-spec IETF
+# KEYTRANS `KT_128_SHA256_P256` cipher suite. `hash2curve` supplies the field
+# arithmetic; `arithmetic` the projective group ops.
+p256 = { version = "=0.14.0-rc.14", default-features = false, features = ["alloc", "arithmetic", "ecdsa"] }
 ed448-goldilocks = "=0.14.0-pre.15"
 sha3 = "0.11"
 sha2 = "0.11"
+# HMAC-SHA256 for the on-spec IETF KEYTRANS commitment primitive (RFC 2104).
+# Pinned to the RustCrypto generation matching our sha2 0.11 / digest 0.11 stack
+# (hkdf 0.13 already pulls this exact hmac 0.13 transitively).
+hmac = "0.13"
+# RFC 6979 deterministic nonce generation for the ECVRF-P256-SHA256-TAI VRF
+# (RFC 9381 Section 5.4.2.1). Same RustCrypto generation as the ecdsa stack.
+rfc6979 = "0.6.0-pre.0"
 base64 = "0.22"
 getrandom = "0.2"
 zeroize = { version = "1", features = ["derive"] }

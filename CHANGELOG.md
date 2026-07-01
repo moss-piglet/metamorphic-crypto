@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.9.0 (2026-06-30)
+
+Adds two new, **additive** primitives that complete on-spec support for the IETF
+KEYTRANS **standard cipher suites** in `metamorphic-log`: an HMAC-SHA256 MAC and
+a second RFC 9381 VRF ciphersuite over NIST P-256. Fully non-breaking: no
+existing wire format, function, default, or export changes — only new modules,
+new WASM exports, and their re-exports.
+
+### New `mac` module — HMAC-SHA256 (RFC 2104)
+
+- New public module `mac` exposing `hmac_sha256(key, msg) -> [u8; 32]` and the
+  `HMAC_SHA256_LEN` (32) constant. Re-exported at the crate root; exposed to
+  WASM as `hmacSha256` (base64 in/out).
+- Thin wrapper over the audited RustCrypto `hmac` crate (same `sha2` 0.11 /
+  `digest` 0.11 generation already in-tree). No novel cryptography.
+- **Purpose:** the on-spec IETF KEYTRANS commitment is
+  `HMAC(Kc, CommitmentValue)`. The KEYTRANS-specific framing (the fixed key
+  `Kc`, the `CommitmentValue` TLS encoding) lives in `metamorphic-log`; this
+  module supplies only the generic MAC, keeping `metamorphic-crypto` the single
+  source of truth for primitives.
+- Validated against **RFC 4231** known-answer vectors (test cases 1, 2, 3, 6).
+
+### New `vrf_p256` module — ECVRF-P256-SHA256-TAI (RFC 9381)
+
+- New public module `vrf_p256` exposing `ecvrf_p256_generate_keypair`,
+  `ecvrf_p256_public_key`, `ecvrf_p256_prove`, `ecvrf_p256_verify`,
+  `ecvrf_p256_proof_to_hash`, plus the `ECVRF_P256_SECRET_KEY_LEN` (32) /
+  `ECVRF_P256_PUBLIC_KEY_LEN` (33) / `ECVRF_P256_PROOF_LEN` (81) /
+  `ECVRF_P256_OUTPUT_LEN` (32) and `ECVRF_P256_SHA256_TAI_SUITE` (`0x01`)
+  constants. Re-exported at the crate root.
+- **Purpose:** the on-spec `KT_128_SHA256_P256` KEYTRANS cipher suite mandates
+  ECVRF-P256-SHA256-TAI for index privacy (the `KT_128_SHA256_Ed25519` suite and
+  the experimental private suite use the existing Edwards25519 VRF). This
+  completes both standard suites end-to-end.
+- Built on the `p256` RustCrypto crate (the same `elliptic-curve` 0.14
+  generation as the in-tree P-521 stack), SHA-256, and RFC 6979 deterministic
+  nonces (`rfc6979` crate) — no novel cryptography, no parallel curve backend.
+- Validated **byte-for-byte** against **RFC 9381 Appendix B.1** known-answer
+  vectors (Examples 10, 11, 12), plus roundtrip / tamper-rejection / wrong-key /
+  property tests. Verification runs with `validate_key = TRUE` (full uniqueness
+  and collision resistance under malicious key generation).
+- **Honest posture:** like the Edwards25519 VRF, this is **classical**
+  (elliptic-curve discrete log) and protects exactly one property — KEYTRANS
+  index privacy. Not FIPS-validated.
+
+### WASM parity (maintainability)
+
+- Added WASM bindings so the browser surface mirrors the native VRF/MAC API
+  one-to-one: `hmacSha256`, `ecvrfEd25519{GenerateKeyPair,PublicKey,Prove,
+  Verify,ProofToHash}`, and `ecvrfP256{GenerateKeyPair,PublicKey,Prove,Verify,
+  ProofToHash}`. (The Edwards25519 VRF was previously native/NIF-only; it now has
+  WASM exports too, closing that gap.) All base64 in/out; `verify` returns the
+  base64 output on success or `null` on a cryptographic reject.
+
+### Dependencies
+
+- Added `hmac = "0.13"`, `rfc6979 = "0.6.0-pre.0"`, and
+  `p256 = "=0.14.0-rc.14"` — all the same audited RustCrypto generation already
+  present transitively. No other dependency changes.
+
 ## v0.8.1 (2026-06-26)
 
 Adds small, **additive** typed posture-introspection accessors for composite

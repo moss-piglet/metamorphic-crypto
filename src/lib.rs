@@ -66,12 +66,14 @@ pub mod hash;
 pub mod hybrid;
 pub mod kdf;
 pub mod keys;
+pub mod mac;
 pub mod recovery;
 pub mod seal;
 pub mod secretbox;
 pub mod sign;
 pub mod suite;
 pub mod vrf;
+pub mod vrf_p256;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -98,6 +100,7 @@ pub use keys::{
     KeyPair, decrypt_private_key, encrypt_private_key, generate_key, generate_keypair,
     generate_salt,
 };
+pub use mac::{HMAC_SHA256_LEN, hmac_sha256};
 pub use recovery::{
     RecoveryKey, decrypt_private_key_with_recovery, encrypt_private_key_for_recovery,
     generate_recovery_key, recovery_key_to_secret,
@@ -119,4 +122,9 @@ pub use vrf::{
     ECVRF_EDWARDS25519_SHA512_TAI_SUITE, ECVRF_OUTPUT_LEN, ECVRF_PROOF_LEN, ECVRF_PUBLIC_KEY_LEN,
     ECVRF_SECRET_KEY_LEN, ecvrf_generate_keypair, ecvrf_proof_to_hash, ecvrf_prove,
     ecvrf_public_key, ecvrf_verify,
+};
+pub use vrf_p256::{
+    ECVRF_P256_OUTPUT_LEN, ECVRF_P256_PROOF_LEN, ECVRF_P256_PUBLIC_KEY_LEN,
+    ECVRF_P256_SECRET_KEY_LEN, ECVRF_P256_SHA256_TAI_SUITE, ecvrf_p256_generate_keypair,
+    ecvrf_p256_proof_to_hash, ecvrf_p256_prove, ecvrf_p256_public_key, ecvrf_p256_verify,
 };
