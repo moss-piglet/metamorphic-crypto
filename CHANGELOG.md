@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.10.2 (2026-07-08)
+
+Dependency-only maintenance release. Lockfile-only change; no manifest, API,
+wire format, default, or export changes.
+
+### Security (advisory hygiene)
+
+- Bump `anyhow` 1.0.102 → **1.0.103**, clearing RustSec **RUSTSEC-2026-0190**
+  (unsoundness in `Error::downcast_mut()`). `anyhow` is **not** a runtime
+  dependency of this crate — it appears in `Cargo.lock` only via the WASM build
+  tooling (`wit-bindgen`/`wit-component`) and is not compiled into the shipped
+  `rlib` or WASM artifact — so there was no exploitable impact. Bumped to keep
+  `cargo audit` and the generated SBOM clean.
+
 ## v0.10.1 (2026-07-08)
 
 Dependency-only maintenance release. No API, wire format, default, or export
