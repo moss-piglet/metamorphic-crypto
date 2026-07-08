@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.1 (2026-07-08)
+
+Dependency-only maintenance release. No API, wire format, default, or export
+changes.
+
+### Security
+
+- Bump `cmov` 0.5.3 → **0.5.4**, resolving RustSec advisory
+  **GHSA-3rjw-m598-pq24 / CVE-2026-50185** (medium): on `aarch64`, `Cmov`/`CmovEq`
+  could produce incorrect results when the high bits of an input register were
+  set (reliance on unspecified inline-asm register contents).
+
+### Other dependency updates
+
+- Bump `aes-gcm` 0.11.0-rc.4 → **0.11.0** (release candidate → stable), and the
+  manifest pin updated to `=0.11.0`.
+- CI: bump `actions/attest-build-provenance` 4.1.0 → 4.1.1.
+
 ## v0.10.0 (2026-06-30)
 
 Adds a single, **additive** primitive: standalone HKDF-SHA512 (RFC 5869).
