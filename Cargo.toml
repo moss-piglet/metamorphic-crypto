@@ -31,7 +31,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 # (ed25519-dalek / x25519-dalek depend on it); pinning it as a direct dependency
 # keeps the single curve backend explicit. `zeroize` (a default feature) lets
 # the VRF wipe its secret scalar.
-curve25519-dalek = "4"
+curve25519-dalek = "5"
 # CNSA 2.0 suite (v0.7.0): pinned to the RustCrypto rc/pre generation that
 # matches our existing sha3 0.11 / ml-kem 0.3 / ml-dsa 0.1 (digest 0.11) stack.
 aes-gcm = "=0.11.0"
