@@ -25,7 +25,7 @@ blake2 = "0.10"
 ml-kem = "0.3"
 ml-dsa = { version = "0.1", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
 ed25519-dalek = "2"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 # curve25519-dalek is used directly by the ECVRF (`vrf`) module for the
 # Edwards25519 curve arithmetic behind RFC 9381. It is already in-tree
 # (ed25519-dalek / x25519-dalek depend on it); pinning it as a direct dependency
