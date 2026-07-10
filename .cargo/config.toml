@@ -1,0 +1,24 @@
+# Cargo configuration for metamorphic-crypto.
+#
+# ── WASM shadow-stack size ──────────────────────────────────────────────────
+#
+# The browser WASM personality (`src/wasm.rs`) exports ML-DSA signing and
+# signing-keygen (`sign`, `generateSigningKeyPair*`). ML-DSA's hedged signing
+# path expands the public matrix `A` and buffers several polynomial vectors on
+# the *stack* inside the upstream `ml-dsa` crate — a working set that cannot be
+# boxed onto the heap from this crate. wasm32 has no threads and a single,
+# fixed, build-time shadow stack (default 1 MiB), so unlike the native runtimes
+# (see `src/stack.rs`) the only place to grow it is the linker.
+#
+# We raise the shadow stack to 8 MiB, which comfortably covers ML-DSA-87
+# (Cat-5, the largest parameter set — mosskeys signs client-side at Cat-5 by
+# default) with generous headroom, and prevents a `RuntimeError` stack-overflow
+# trap in the browser. `-z stack-size=` is understood by `wasm-ld`; the WASM
+# module only grows this region on demand, so the cost is negligible.
+#
+# Keep this value in step with `RECOMMENDED_SIGNING_STACK_BYTES` in
+# `src/stack.rs` (the native guard) conceptually — they solve the same problem
+# for the two constrained runtimes.
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=8388608"]
