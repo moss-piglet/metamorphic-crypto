@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.10.4 (2026-07-09)
+## v0.10.5 (2026-07-09)
 
 Release-plumbing patch. **Code identical to v0.10.3** — no source, API, wire
 format, signature format, default, or export changes.
@@ -8,11 +8,15 @@ format, signature format, default, or export changes.
 v0.10.3 published to crates.io but its release run failed at the npm step
 (`Cannot find module 'sigstore'`: the `npm install -g npm@latest` self-upgrade
 is currently broken for OIDC provenance generation), which also skipped the
-GitHub Release. The tag is protected/immutable, so this patch re-releases the
+GitHub Release. Tags are protected/immutable, so this patch re-releases the
 same code through the hardened release workflow (Node 24's clean bundled npm;
 idempotent crates.io/npm publishes; tag-vs-Cargo.toml version guard) to produce
 a complete, signed, attested npm + GitHub Release. Downstream WASM consumers
-should vendor **v0.10.4** (it carries the same 8 MiB shadow-stack fix).
+should vendor **v0.10.5** (it carries the same 8 MiB shadow-stack fix).
+
+The v0.10.4 tag/version was retired unused: its tag was pushed against the
+pre-bump commit and the new version guard correctly failed that run before any
+publish, so nothing shipped as 0.10.4 (a gap in the version sequence).
 
 ## v0.10.3 (2026-07-09)
 
