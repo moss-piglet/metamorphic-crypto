@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.10.3 (2026-07-09)
+
+Robustness release for **ML-DSA signing / key generation on constrained
+runtimes**. Purely additive and behavioral — no wire format, signature format,
+default, or existing-export changes. Existing signatures, keys, and ciphertext
+are byte-for-byte unaffected.
+
+### Background
+
+ML-DSA (FIPS 204) allocates large intermediate lattice working sets **on the
+stack** inside the upstream `ml-dsa` crate: the hedged signing path expands the
+public matrix `A` and buffers several polynomial vectors through its
+rejection-sampling loop, and keygen / verifying-key expansion do the same.
+Those are fixed-size stack allocations in code we do not control, so they cannot
+be boxed onto the heap from this crate. On runtimes with a small thread stack
+this overflows the guard page. `sign()` / `generate_signing_keypair*()` stay
+**pure** (they never spawn threads); the guards below live outside the
+primitives so consumers opt in per runtime.
+
+### New native large-stack guard (`stack` module)
+
+- New public, `#[cfg(not(target_arch = "wasm32"))]` module `stack` exposing:
+  - `on_signing_stack<F, T>(f: F) -> T` — runs `f` on a dedicated worker thread
+    with an ample stack (via `std::thread::scope` + `Builder::stack_size`) and
+    blocks the caller on the join. Panics propagate unchanged via
+    `resume_unwind`. This is the shared, audited guard for ML-DSA signing/keygen
+    on small-stack native runtimes — notably the **BEAM dirty-CPU scheduler**
+    (`+sssdcpu` default ~320 KB), where the overflow previously took the whole
+    VM down with SIGBUS. Both Elixir NIFs (`metamorphic_crypto`,
+    `metamorphic_log`) now route through this one helper instead of
+    open-coding it.
+  - `RECOMMENDED_SIGNING_STACK_BYTES` (32 MiB) — documented recommended stack.
+- Both re-exported from the crate root. `#![forbid(unsafe_code)]` preserved.
+
+### WASM shadow-stack size raised to 8 MiB
+
+- Added `.cargo/config.toml` passing `-C link-arg=-zstack-size=8388608` for the
+  `wasm32-unknown-unknown` target. The browser WASM personality exports ML-DSA
+  signing/keygen and has no threads and a single fixed build-time shadow stack
+  (default 1 MiB), so the linker is the only place to grow it. This prevents a
+  `RuntimeError` stack-overflow trap for Cat-5 / ML-DSA-87 signing in the
+  browser (the level Metamorphic clients sign at by default). WASM memory grows
+  the region on demand, so the reservation cost is negligible.
+
+### Tests
+
+- New `tests/signing_stack.rs`: full keygen → sign → verify roundtrip run
+  *inside* `on_signing_stack` at Cat-3 and Cat-5, mirroring how the NIFs invoke
+  it on the dirty scheduler (SIGBUS regression guard).
+
 ## v0.10.2 (2026-07-08)
 
 Dependency-only maintenance release. Lockfile-only change; no manifest, API,

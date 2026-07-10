@@ -72,6 +72,8 @@ pub mod recovery;
 pub mod seal;
 pub mod secretbox;
 pub mod sign;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod stack;
 pub mod suite;
 pub mod vrf;
 pub mod vrf_p256;
@@ -119,6 +121,8 @@ pub use sign::{
     generate_signing_keypair_suite, generate_signing_keypair_with_level, sign, signature_posture,
     signature_posture_from_signature, verify,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use stack::{RECOMMENDED_SIGNING_STACK_BYTES, on_signing_stack};
 pub use suite::{SEAL_CONTEXT_V1, Suite};
 pub use vrf::{
     ECVRF_EDWARDS25519_SHA512_TAI_SUITE, ECVRF_OUTPUT_LEN, ECVRF_PROOF_LEN, ECVRF_PUBLIC_KEY_LEN,
