@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.6 (2026-07-20)
+
+Dependency-resolution fix. **No source, API, wire format, signature format,
+default, or export changes** — same crypto behavior as v0.10.5.
+
+Pins `primeorder = "=0.14.0-rc.14"` as a direct dependency. The p256 / p521
+`0.14.0-rc.14` curves (used by the ECVRF-P256/P521 RFC 9381 VRF) request
+`primeorder = "0.14.0-rc.14"`, and because that is a pre-release requirement the
+released `primeorder 0.14.0` (and `rc.15`) satisfies it. Those releases added a
+`Scalar: WnafSize` bound to `PrimeCurveParams` that the rc.14 curves do not
+implement, so a fresh, lock-less resolve (e.g. `cargo install` without
+`--locked`, or a downstream `cargo update`) picked `primeorder 0.14.0` and
+failed to compile `p256` / `p521`. `--locked` builds, prebuilt binaries, and all
+CI were unaffected because their lockfiles already pinned rc.14, so the break was
+invisible until an end-user source install. There is no stable 0.14 curve release
+to migrate to yet, so the exact pin to the matching rc.14 is the minimal correct
+fix; it also anchors the whole rc curve generation, keeping `ecdsa` at rc.22 now
+that `ecdsa 0.17.0` has been released. Remove the pin once p256/p521 reach a
+stable 0.14 release.
+
+Also exact-pins `rfc6979 = "=0.6.0-pre.0"` (previously a non-exact pre-release
+requirement, protected only by `ecdsa`'s transitive exact pin) for consistency
+with the other pre-release CNSA crates and defense-in-depth against the same
+resolution hazard.
+
 ## v0.10.5 (2026-07-09)
 
 Release-plumbing patch. **Code identical to v0.10.3** — no source, API, wire

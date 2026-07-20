@@ -1,6 +1,6 @@
 [package]
 name = "metamorphic-crypto"
-version = "0.10.5"
+version = "0.10.6"
 edition = "2024"
 rust-version = "1.85"
 description = "Zero-knowledge end-to-end encryption with post-quantum hybrid KEM (ML-KEM + X25519) and an opt-in CNSA 2.0 suite axis (matched-strength hybrid + pure ML-KEM-1024 / ML-DSA-87 / AES-256-GCM)"
@@ -43,6 +43,16 @@ p521 = { version = "=0.14.0-rc.14", default-features = false, features = ["alloc
 # KEYTRANS `KT_128_SHA256_P256` cipher suite. `hash2curve` supplies the field
 # arithmetic; `arithmetic` the projective group ops.
 p256 = { version = "=0.14.0-rc.14", default-features = false, features = ["alloc", "arithmetic", "ecdsa"] }
+# primeorder supplies the short-Weierstrass group arithmetic behind the p256/p521
+# rc.14 curves above. Those curves request it as `primeorder = "0.14.0-rc.14"`,
+# and a pre-release requirement lets the RELEASED primeorder 0.14.0 satisfy it.
+# The released 0.14.0 (and rc.15) added a `Scalar: WnafSize` bound to
+# PrimeCurveParams that the rc.14 curves do not implement, so a fresh, lock-less
+# resolve (e.g. `cargo install` without `--locked`) grabs 0.14.0 and fails to
+# compile. There is no stable 0.14 curve release to migrate to yet, so we pin
+# primeorder to the exact rc.14 that matches the curves. Pure resolution fix, no
+# behavior change. Remove once p256/p521 reach a stable 0.14 release.
+primeorder = "=0.14.0-rc.14"
 ed448-goldilocks = "=0.14.0-pre.15"
 sha3 = "0.11"
 sha2 = "0.11"
@@ -52,7 +62,9 @@ sha2 = "0.11"
 hmac = "0.13"
 # RFC 6979 deterministic nonce generation for the ECVRF-P256-SHA256-TAI VRF
 # (RFC 9381 Section 5.4.2.1). Same RustCrypto generation as the ecdsa stack.
-rfc6979 = "0.6.0-pre.0"
+# Exact-pinned (like the other pre-release CNSA crates) so a released 0.6.0
+# cannot be pulled in on a fresh resolve.
+rfc6979 = "=0.6.0-pre.0"
 base64 = "0.22"
 getrandom = "0.2"
 zeroize = { version = "1", features = ["derive"] }
