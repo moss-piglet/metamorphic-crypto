@@ -395,13 +395,13 @@ fn expected_signature_len(tag: u8) -> Option<usize> {
 }
 
 /// Derive the ML-DSA public key bytes from a 32-byte seed.
-fn mldsa_public_key<P: MlDsaParams>(seed: &B32) -> Vec<u8> {
+pub(crate) fn mldsa_public_key<P: MlDsaParams>(seed: &B32) -> Vec<u8> {
     let vk = SigningKey::<P>::from_seed(seed).verifying_key().encode();
     AsRef::<[u8]>::as_ref(&vk).to_vec()
 }
 
 /// Produce a hedged (randomized) ML-DSA signature over `framed` (empty native ctx).
-fn mldsa_sign<P: MlDsaParams>(seed: &B32, framed: &[u8]) -> Vec<u8> {
+pub(crate) fn mldsa_sign<P: MlDsaParams>(seed: &B32, framed: &[u8]) -> Vec<u8> {
     let sig = ExpandedSigningKey::<P>::from_seed(seed)
         .sign_randomized(framed, &[], &mut OsCsprng)
         .expect("ML-DSA randomized signing (empty context, infallible RNG)")
@@ -410,7 +410,7 @@ fn mldsa_sign<P: MlDsaParams>(seed: &B32, framed: &[u8]) -> Vec<u8> {
 }
 
 /// Verify an ML-DSA signature; returns `false` on any malformed input.
-fn mldsa_verify<P: MlDsaParams>(pk: &[u8], framed: &[u8], sig: &[u8]) -> bool {
+pub(crate) fn mldsa_verify<P: MlDsaParams>(pk: &[u8], framed: &[u8], sig: &[u8]) -> bool {
     match (
         VerifyingKey::<P>::new_from_slice(pk),
         Signature::<P>::try_from(sig),

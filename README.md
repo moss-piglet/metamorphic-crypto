@@ -15,6 +15,7 @@ Built for [Metamorphic](https://metamorphic.app) and [Mosslet](https://mosslet.c
 - **Hybrid PQ KEM** (ML-KEM-1024 + X25519) — NIST Cat-5 post-quantum key encapsulation (opt-in)
 - **Argon2id KDF** — password-based key derivation (libsodium INTERACTIVE parameters)
 - **Hybrid PQ signatures** (ML-DSA + Ed25519) — NIST Cat-2/3/5 composite digital signatures (strict AND)
+- **Transparency-log interop primitives** (raw Ed25519 + raw ML-DSA-44) — bare, single-algorithm signatures for C2SP `signed-note` witness lines and `tlog-cosignature` v1 cosignatures (classical + post-quantum), kept separate from the default composite
 - **CNSA 2.0 suite axis** (opt-in) — matched-strength hybrid (X448 / P-521 / Ed448 / ECDSA-P-521) and pure post-quantum (ML-KEM-1024, ML-DSA-87, AES-256-GCM)
 - **Hashing** (SHA3-512/256, SHA-256/512) — public, one-shot digest functions (e.g. for key fingerprints / safety numbers)
 - **HMAC-SHA256** (RFC 2104) — keyed MAC primitive (e.g. the on-spec KEYTRANS commitment)
@@ -364,6 +365,51 @@ ML-DSA is defense-in-depth on top of the independently-strong Ed25519: even if a
 flaw were found in the young `ml-dsa` implementation, the composite remains at
 least as strong as Ed25519. This is stated honestly so integrators can choose
 while the post-quantum implementation matures toward audit / FIPS validation.
+
+## Transparency-log interop primitives (raw Ed25519 + ML-DSA-44)
+
+The composite above is the right default for **your own** authenticity. But the
+C2SP transparency-log ecosystem speaks two **bare, single-algorithm** signature
+types on a checkpoint's [`signed-note`](https://c2sp.org/signed-note): a
+classical **Ed25519** line (what deployed witnesses recompute and co-sign today)
+and a post-quantum **ML-DSA-44** [`tlog-cosignature`](https://c2sp.org/tlog-cosignature)
+v1 line (so clients get quantum-resistant split-view protection). To interoperate
+byte-for-byte, a verifier must speak those exact primitives — no context framing,
+no composite. This crate surfaces them directly so downstream log tooling (e.g.
+`metamorphic-log`) never pulls a second, parallel Ed25519/ML-DSA dependency; this
+crate stays the single source of truth for every primitive.
+
+These are **interop primitives, not the default** — for your own signatures use
+the hybrid composite (`sign` / `verify`) above.
+
+```rust
+use metamorphic_crypto::{
+    // Classical Ed25519 (RFC 8032) — witness signed-note lines.
+    ed25519_generate_keypair, ed25519_sign, ed25519_verify,
+    // Post-quantum ML-DSA-44 (FIPS 204) — v1 cosignature lines.
+    ml_dsa_44_generate_keypair, ml_dsa_44_sign, ml_dsa_44_verify,
+};
+
+// Ed25519: raw signature over exact bytes (e.g. the note text).
+let (seed, pk) = ed25519_generate_keypair();
+let sig = ed25519_sign(&seed, message).unwrap();          // 64 bytes
+assert!(ed25519_verify(&pk, message, &sig).unwrap());
+
+// ML-DSA-44: raw hedged signature over exact bytes (e.g. the cosigned_message
+// struct). Bytes are non-reproducible, but verify deterministically.
+let (ml_seed, ml_pk) = ml_dsa_44_generate_keypair();      // pk 1312 bytes
+let ml_sig = ml_dsa_44_sign(&ml_seed, message).unwrap();  // 2420 bytes
+assert!(ml_dsa_44_verify(&ml_pk, message, &ml_sig).unwrap());
+```
+
+| Primitive  | Bytes (seed / pk / sig) | Context framing | Reproducible | Used for |
+|------------|-------------------------|-----------------|--------------|----------|
+| Ed25519    | 32 / 32 / 64            | none (raw)      | yes          | `signed-note` witness/log lines |
+| ML-DSA-44  | 32 / 1312 / 2420        | none (raw)      | no (hedged)  | `tlog-cosignature` v1 (PQ) lines |
+
+Both `*_verify` functions return `Ok(true)`/`Ok(false)` for cryptographic
+outcomes (wrong key, tampered message) and `Err(CryptoError::InvalidLength)` only
+for structurally wrong key/signature lengths.
 
 ## CNSA 2.0 suite axis (opt-in)
 
