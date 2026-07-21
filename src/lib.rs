@@ -68,6 +68,7 @@ pub mod hybrid;
 pub mod kdf;
 pub mod keys;
 pub mod mac;
+pub mod mldsa;
 pub mod recovery;
 pub mod seal;
 pub mod secretbox;
@@ -105,6 +106,10 @@ pub use keys::{
     generate_salt,
 };
 pub use mac::{HMAC_SHA256_LEN, hmac_sha256};
+pub use mldsa::{
+    MLDSA44_PUBLIC_KEY_LEN, MLDSA44_SEED_LEN, MLDSA44_SIGNATURE_LEN, ml_dsa_44_generate_keypair,
+    ml_dsa_44_public_key, ml_dsa_44_sign, ml_dsa_44_verify,
+};
 pub use recovery::{
     RecoveryKey, decrypt_private_key_with_recovery, encrypt_private_key_for_recovery,
     generate_recovery_key, recovery_key_to_secret,

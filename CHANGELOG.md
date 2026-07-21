@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.10.7 (2026-07-21)
+
+Additive transparency-log interoperability. Surfaces **raw, single-algorithm
+ML-DSA-44 (FIPS 204)** primitives so downstream crates can produce and verify
+the post-quantum C2SP `tlog-cosignature` v1 cosignature type
+(<https://c2sp.org/tlog-cosignature>), the ML-DSA-44 sibling of the classical
+`ed25519_*` witness primitives added earlier. **No changes** to the hybrid PQ
+composite, existing exports, wire/signature formats, defaults, or any KAT
+vector — this is purely new surface.
+
+### Added
+
+- New `mldsa` module (re-exported at the crate root):
+  - `ml_dsa_44_verify(public_key, message, signature)` — verify a bare FIPS 204
+    ML-DSA-44 signature over exact message bytes (no context framing), returning
+    `Ok(true)`/`Ok(false)` for cryptographic outcomes and
+    `Err(CryptoError::InvalidLength)` for structurally wrong key/signature
+    lengths.
+  - `ml_dsa_44_sign(seed, message)` — hedged (randomized) ML-DSA-44 signing;
+    bytes are non-reproducible but verify deterministically.
+  - `ml_dsa_44_public_key(seed)` and `ml_dsa_44_generate_keypair()`.
+  - Length constants `MLDSA44_SEED_LEN` (32), `MLDSA44_PUBLIC_KEY_LEN` (1312),
+    `MLDSA44_SIGNATURE_LEN` (2420).
+- Rationale mirrors `ed25519`: these are exposed strictly for byte-level
+  transparency-log cosignature interop (so a witness can emit, and clients can
+  verify, a quantum-resistant cosignature), keeping this crate the single source
+  of truth for the ML-DSA primitive rather than adding a parallel dependency in
+  `metamorphic-log`. The `cosigned_message` struct framing lives in
+  `metamorphic-log`; this crate only signs/verifies the resulting bytes.
+- Internal: `sign::mldsa_public_key` / `mldsa_sign` / `mldsa_verify` are now
+  `pub(crate)` so the new `mldsa` module reuses the vetted ML-DSA code path.
+
 ## v0.10.6 (2026-07-20)
 
 Dependency-resolution fix. **No source, API, wire format, signature format,
