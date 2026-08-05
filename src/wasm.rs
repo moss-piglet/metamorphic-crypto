@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use crate::hybrid::SecurityLevel;
 use crate::suite::Suite;
 use crate::{
-    b64, box_seal, hash, hkdf, hybrid, kdf, keys, mac, recovery, seal, secretbox, sign, vrf,
+    b64, box_seal, hash, hkdf, hybrid, kdf, keys, mac, poprf, recovery, seal, secretbox, sign, vrf,
     vrf_p256,
 };
 // ---------------------------------------------------------------------------
@@ -638,6 +638,192 @@ pub fn ecvrf_p256_proof_to_hash(proof_b64: &str) -> Result<String, JsValue> {
     let proof = b64::decode(proof_b64).map_err(to_js)?;
     Ok(b64::encode(
         &vrf_p256::ecvrf_p256_proof_to_hash(&proof).map_err(to_js)?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// POPRF (RFC 9497, OPRF(ristretto255, SHA-512))
+// ---------------------------------------------------------------------------
+//
+// The oblivious index-derivation flow behind CONIKS query-time privacy: the
+// client blinds its private input, the server evaluates the blinded element
+// (never learning the input), and the client unblinds + verifies. Keys,
+// elements, proofs, inputs, and outputs cross as base64. `poprfFinalize`
+// returns the base64 output on success or `null` on a cryptographic reject.
+// The `*WithScalar` / `*WithRandom` variants exist for deterministic
+// cross-language KATs; production callers use the CSPRNG variants.
+
+/// Generate a POPRF keypair. Returns JSON: `{ secretKey, publicKey }`.
+#[wasm_bindgen(js_name = "poprfGenerateKeyPair")]
+pub fn poprf_generate_keypair() -> JsValue {
+    let (sk, pk) = poprf::poprf_generate_keypair();
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &b64::encode(&sk).into()).unwrap();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &b64::encode(&pk).into()).unwrap();
+    obj.into()
+}
+
+/// Derive a POPRF keypair from a 32-byte seed + public info (RFC 9497 §3.2.1).
+/// Returns JSON: `{ secretKey, publicKey }`.
+#[wasm_bindgen(js_name = "poprfDeriveKeyPair")]
+pub fn poprf_derive_key_pair(seed_b64: &str, info_b64: &str) -> Result<JsValue, JsValue> {
+    let seed = b64::decode(seed_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let (sk, pk) = poprf::poprf_derive_key_pair(&seed, &info).map_err(to_js)?;
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"secretKey".into(), &b64::encode(&sk).into()).unwrap();
+    js_sys::Reflect::set(&obj, &"publicKey".into(), &b64::encode(&pk).into()).unwrap();
+    Ok(obj.into())
+}
+
+/// Derive the base64 POPRF public key from a base64 secret key.
+#[wasm_bindgen(js_name = "poprfPublicKey")]
+pub fn poprf_public_key(secret_key_b64: &str) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    Ok(b64::encode(&poprf::poprf_public_key(&sk).map_err(to_js)?))
+}
+
+fn poprf_blind_state_js(state: poprf::PoprfBlindState) -> JsValue {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"blind".into(), &b64::encode(&state.blind).into()).unwrap();
+    js_sys::Reflect::set(
+        &obj,
+        &"blindedElement".into(),
+        &b64::encode(&state.blinded_element).into(),
+    )
+    .unwrap();
+    js_sys::Reflect::set(
+        &obj,
+        &"tweakedKey".into(),
+        &b64::encode(&state.tweaked_key).into(),
+    )
+    .unwrap();
+    obj.into()
+}
+
+/// Blind `input` under `info` and the server's public key (RFC 9497 §3.3.3).
+/// Returns JSON: `{ blind, blindedElement, tweakedKey }` — only
+/// `blindedElement` leaves the client.
+#[wasm_bindgen(js_name = "poprfBlind")]
+pub fn poprf_blind(
+    input_b64: &str,
+    info_b64: &str,
+    public_key_b64: &str,
+) -> Result<JsValue, JsValue> {
+    let input = b64::decode(input_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let pk = b64::decode(public_key_b64).map_err(to_js)?;
+    Ok(poprf_blind_state_js(
+        poprf::poprf_blind(&input, &info, &pk).map_err(to_js)?,
+    ))
+}
+
+/// KAT-only [`poprfBlind`] with an explicit blind scalar (deterministic).
+#[wasm_bindgen(js_name = "poprfBlindWithScalar")]
+pub fn poprf_blind_with_scalar(
+    input_b64: &str,
+    info_b64: &str,
+    public_key_b64: &str,
+    blind_b64: &str,
+) -> Result<JsValue, JsValue> {
+    let input = b64::decode(input_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let pk = b64::decode(public_key_b64).map_err(to_js)?;
+    let blind = b64::decode(blind_b64).map_err(to_js)?;
+    Ok(poprf_blind_state_js(
+        poprf::poprf_blind_with_scalar(&input, &info, &pk, &blind).map_err(to_js)?,
+    ))
+}
+
+fn poprf_evaluation_js(
+    evaluated: [u8; poprf::POPRF_ELEMENT_LEN],
+    proof: [u8; poprf::POPRF_PROOF_LEN],
+) -> JsValue {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &obj,
+        &"evaluatedElement".into(),
+        &b64::encode(&evaluated).into(),
+    )
+    .unwrap();
+    js_sys::Reflect::set(&obj, &"proof".into(), &b64::encode(&proof).into()).unwrap();
+    obj.into()
+}
+
+/// Server-side blind evaluation (RFC 9497 §3.3.3). Returns JSON:
+/// `{ evaluatedElement, proof }` (the DLEQ proof).
+#[wasm_bindgen(js_name = "poprfBlindEvaluate")]
+pub fn poprf_blind_evaluate(
+    secret_key_b64: &str,
+    blinded_element_b64: &str,
+    info_b64: &str,
+) -> Result<JsValue, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    let blinded = b64::decode(blinded_element_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let (evaluated, proof) = poprf::poprf_blind_evaluate(&sk, &blinded, &info).map_err(to_js)?;
+    Ok(poprf_evaluation_js(evaluated, proof))
+}
+
+/// KAT-only [`poprfBlindEvaluate`] with an explicit DLEQ nonce (deterministic).
+#[wasm_bindgen(js_name = "poprfBlindEvaluateWithRandom")]
+pub fn poprf_blind_evaluate_with_random(
+    secret_key_b64: &str,
+    blinded_element_b64: &str,
+    info_b64: &str,
+    random_b64: &str,
+) -> Result<JsValue, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    let blinded = b64::decode(blinded_element_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let random = b64::decode(random_b64).map_err(to_js)?;
+    let (evaluated, proof) =
+        poprf::poprf_blind_evaluate_with_random(&sk, &blinded, &info, &random).map_err(to_js)?;
+    Ok(poprf_evaluation_js(evaluated, proof))
+}
+
+/// Client-side completion (RFC 9497 §3.3.3 `Finalize`): verify the DLEQ proof,
+/// unblind, and return the base64 64-byte output — or `null` on a
+/// cryptographic rejection.
+#[allow(clippy::too_many_arguments)] // Mirrors the RFC 9497 Finalize signature.
+#[wasm_bindgen(js_name = "poprfFinalize")]
+pub fn poprf_finalize(
+    input_b64: &str,
+    blind_b64: &str,
+    evaluated_element_b64: &str,
+    blinded_element_b64: &str,
+    proof_b64: &str,
+    info_b64: &str,
+    tweaked_key_b64: &str,
+) -> Result<Option<String>, JsValue> {
+    let input = b64::decode(input_b64).map_err(to_js)?;
+    let blind = b64::decode(blind_b64).map_err(to_js)?;
+    let evaluated = b64::decode(evaluated_element_b64).map_err(to_js)?;
+    let blinded = b64::decode(blinded_element_b64).map_err(to_js)?;
+    let proof = b64::decode(proof_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    let tweaked = b64::decode(tweaked_key_b64).map_err(to_js)?;
+    Ok(poprf::poprf_finalize(
+        &input, &blind, &evaluated, &blinded, &proof, &info, &tweaked,
+    )
+    .map_err(to_js)?
+    .map(|out| b64::encode(&out)))
+}
+
+/// Non-oblivious server-side evaluation (RFC 9497 §3.3.3 `Evaluate`): the
+/// base64 64-byte output derived directly from the secret key and cleartext
+/// input. Used by an operator to derive indices for labels it already holds.
+#[wasm_bindgen(js_name = "poprfEvaluate")]
+pub fn poprf_evaluate(
+    secret_key_b64: &str,
+    input_b64: &str,
+    info_b64: &str,
+) -> Result<String, JsValue> {
+    let sk = b64::decode(secret_key_b64).map_err(to_js)?;
+    let input = b64::decode(input_b64).map_err(to_js)?;
+    let info = b64::decode(info_b64).map_err(to_js)?;
+    Ok(b64::encode(
+        &poprf::poprf_evaluate(&sk, &input, &info).map_err(to_js)?,
     ))
 }
 
