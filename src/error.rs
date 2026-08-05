@@ -59,6 +59,15 @@ pub enum CryptoError {
     #[error("vrf: {0}")]
     Vrf(String),
 
+    /// An error in the partially oblivious PRF (POPRF, RFC 9497) layer that is
+    /// not a plain length mismatch — e.g. a non-canonical scalar, an invalid or
+    /// identity element, or a zero tweaked key (`InverseError`, which per the
+    /// RFC signals a likely key compromise and should trigger rotation). A
+    /// *verification* failure of an otherwise well-formed DLEQ proof is
+    /// reported as `Ok(None)` from `poprf_finalize`, not as this error.
+    #[error("poprf: {0}")]
+    Poprf(String),
+
     /// Decrypted bytes are not valid UTF-8.
     #[error("UTF-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),

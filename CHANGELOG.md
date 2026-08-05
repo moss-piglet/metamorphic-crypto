@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.11.0 (2026-08-05)
+
+Additive privacy primitive. Implements **RFC 9497 modePOPRF (`0x02`), suite
+OPRF(ristretto255, SHA-512)** — a Partially Oblivious PRF — built entirely on
+the `curve25519-dalek` 4 backend this crate already depends on (the same curve
+stack behind `ed25519` and `vrf`) plus SHA-512: **no new dependencies**. This
+enables oblivious index derivation for `metamorphic-log`'s CONIKS-style key
+transparency: a client computes a keyed, deterministic index over its private
+label **without the server ever seeing the cleartext label** (the construction
+deployed at scale by WhatsApp Key Transparency). **No changes** to existing
+modules, exports, wire/signature formats, defaults, or any KAT vector — this
+is purely new surface.
+
+### Added
+
+- New `poprf` module (re-exported at the crate root):
+  - `poprf_generate_keypair()`, `poprf_derive_key_pair(seed, info)` (RFC 9497
+    §3.2.1 deterministic key derivation), and `poprf_public_key(secret_key)`.
+  - `poprf_blind(input, info, public_key)` → `PoprfBlindState` (secret `blind`
+    + `blinded_element`); `poprf_blind_evaluate(secret_key, blinded_element,
+    info)` → evaluated element + 64-byte DLEQ proof (server side);
+    `poprf_finalize(input, blind, evaluated_element, blinded_element, proof,
+    info, public_key)` → 64-byte output, returning `Ok(None)` for a
+    well-formed-but-invalid DLEQ proof (not an error).
+  - `poprf_evaluate(secret_key, input, info)` — one-shot server-side
+    evaluation (no blinding), for non-oblivious callers and parity testing.
+  - Length constants `POPRF_SECRET_KEY_LEN` / `POPRF_PUBLIC_KEY_LEN` /
+    `POPRF_ELEMENT_LEN` / `POPRF_BLIND_LEN` / `POPRF_PROOF_LEN` /
+    `POPRF_OUTPUT_LEN` / `POPRF_SEED_LEN`.
+  - `POPRF_RISTRETTO255_SHA512_SUITE` (`0x80`) — a **private** CONIKS
+    leaf-hash binding identifier allocated above the RFC 9381 registered range
+    (`0x01–0x04`), so a POPRF-derived tree can never be confused with a
+    VRF-derived one at the byte level. This is **not** an RFC 9497 identifier
+    (RFC 9497 names this suite with the ASCII string `"ristretto255-SHA512"`).
+  - `#[doc(hidden)]` deterministic KAT hooks `poprf_blind_with_scalar` /
+    `poprf_blind_evaluate_with_random` for cross-language byte-parity testing.
+  - New `CryptoError::Poprf` variant for POPRF-layer failures (non-canonical
+    scalar, invalid or identity element, zero tweaked key — `InverseError`,
+    which per the RFC signals likely key compromise and should trigger
+    rotation).
+- Correctness: all three RFC 9497 Appendix A.1.3 POPRF test vectors pass, plus
+  the RFC 9380 Appendix K.3 `expand_message_xmd` (SHA-512 XMD) vectors —
+  including the `DST_prime = DST || I2OSP(len(DST), 1)` length-octet **suffix**
+  that is easy to misread as a prefix.
+- WASM: exports `poprfGenerateKeyPair`, `poprfDeriveKeyPair`,
+  `poprfPublicKey`, `poprfBlind`, `poprfBlindEvaluate`, `poprfFinalize`,
+  `poprfEvaluate` (plus the two KAT hooks) — the browser side of oblivious
+  CONIKS lookups.
+
+### Post-quantum posture (honest framing)
+
+2HashDH blinding is **classical** (elliptic-curve discrete log): recorded
+evaluation transcripts are not post-quantum private (harvest-now /
+unblind-later). This primitive protects exactly one property — query-time
+index privacy against the operator *today* — and does so completely.
+Authenticity, integrity, and confidentiality elsewhere in the stack remain
+post-quantum (ML-DSA hybrid signatures, SHA3-512 commitments) and do not rely
+on this primitive. See the `poprf` module docs for the full statement.
+
 ## v0.10.7 (2026-07-21)
 
 Additive transparency-log interoperability. Surfaces **raw, single-algorithm
