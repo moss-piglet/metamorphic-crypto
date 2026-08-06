@@ -35,7 +35,7 @@ jobs:
       # Third-party actions are pinned to a full commit SHA (SLSA L3 / federal
       # supply-chain requirement). Version comments are kept for Dependabot,
       # which can bump both the SHA and the comment.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -171,7 +171,7 @@ jobs:
       # currently broken (it leaves npm unable to resolve its bundled `sigstore`
       # module — "Cannot find module 'sigstore'" — during provenance
       # generation). setup-node's bundled npm is a clean, complete install.
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -210,7 +210,7 @@ jobs:
 
       # --- GitHub Release ---
       - name: Attach artifacts to GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             pkg/metamorphic_crypto.js
