@@ -34,7 +34,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 curve25519-dalek = "4"
 # CNSA 2.0 suite (v0.7.0): pinned to the RustCrypto rc/pre generation that
 # matches our existing sha3 0.11 / ml-kem 0.3 / ml-dsa 0.1 (digest 0.11) stack.
-aes-gcm = "=0.11.0"
+aes-gcm = "=0.11.1"
 hkdf = "=0.13.0"
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
 p521 = { version = "=0.14.0-rc.14", default-features = false, features = ["alloc", "arithmetic", "ecdh", "ecdsa"] }
